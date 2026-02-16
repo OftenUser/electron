@@ -27,6 +27,7 @@ control our application lifecycle and create a native browser window.
 
 ```js
 const { app, BrowserWindow, shell } = require('electron')
+
 const path = require('node:path')
 ```
 
@@ -130,9 +131,8 @@ this for you.
 #### [Electron Forge](https://electronforge.io)
 
 If you're using Electron Forge, adjust `packagerConfig` for macOS support, and the configuration for
-the appropriate Linux makers for Linux support, in your [Forge
-configuration](https://www.electronforge.io/configuration) _(please note the following example only
-shows the bare minimum needed to add the configuration changes)_:
+the appropriate Linux makers for Linux support, in your [Forge configuration](https://www.electronforge.io/configuration)
+_(please note the following example only shows the bare minimum needed to add the configuration changes)_:
 
 ```json
 {

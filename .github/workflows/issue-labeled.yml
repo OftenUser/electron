@@ -4,28 +4,51 @@ on:
   issues:
     types: [labeled]
 
-permissions:  # added using https://github.com/step-security/secure-workflows
-  contents: read
+permissions: {}
 
 jobs:
-  issue-labeled-blocked:
-    name: blocked/* label added
-    if: startsWith(github.event.label.name, 'blocked/')
+  issue-labeled-with-status:
+    name: status/{confirmed,reviewed} label added
+    if: github.event.label.name == 'status/confirmed' || github.event.label.name == 'status/reviewed'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Generate GitHub App token
-        uses: electron/github-app-auth-action@cc6751b3b5e4edc5b9a4ad0a021ac455653b6dc8 # v1.0.0
+        uses: electron/github-app-auth-action@e14e47722ed120360649d0789e25b9baece12725 # v2.0.0
         id: generate-token
         with:
           creds: ${{ secrets.ISSUE_TRIAGE_GH_APP_CREDS }}
           org: electron
       - name: Set status
-        uses: dsanders11/project-actions/edit-item@a24415515fa60a22f71f9d9d00e36ca82660cde9 # v1.0.1
+        uses: dsanders11/project-actions/edit-item@2134fe7cc71c58b7ae259c82a8e63c6058255678 # v1.7.0
+        with:
+          token: ${{ steps.generate-token.outputs.token }}
+          project-number: 90
+          field: Status
+          field-value: ✅ Triaged
+          fail-if-item-not-found: false
+  issue-labeled-blocked:
+    name: blocked/* label added
+    if: startsWith(github.event.label.name, 'blocked/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Generate GitHub App token
+        uses: electron/github-app-auth-action@e14e47722ed120360649d0789e25b9baece12725 # v2.0.0
+        id: generate-token
+        with:
+          creds: ${{ secrets.ISSUE_TRIAGE_GH_APP_CREDS }}
+          org: electron
+      - name: Set status
+        uses: dsanders11/project-actions/edit-item@2134fe7cc71c58b7ae259c82a8e63c6058255678 # v1.7.0
         with:
           token: ${{ steps.generate-token.outputs.token }}
           project-number: 90
           field: Status
           field-value: 🛑 Blocked
+          fail-if-item-not-found: false
   issue-labeled-blocked-need-repro:
     name: blocked/need-repro label added
     if: github.event.label.name == 'blocked/need-repro'
@@ -46,13 +69,13 @@ jobs:
           fi
       - name: Generate GitHub App token
         if: ${{ steps.check-for-comment.outputs.SHOULD_COMMENT }}
-        uses: electron/github-app-auth-action@cc6751b3b5e4edc5b9a4ad0a021ac455653b6dc8 # v1.0.0
+        uses: electron/github-app-auth-action@e14e47722ed120360649d0789e25b9baece12725 # v2.0.0
         id: generate-token
         with:
           creds: ${{ secrets.ISSUE_TRIAGE_GH_APP_CREDS }}
       - name: Create comment
         if: ${{ steps.check-for-comment.outputs.SHOULD_COMMENT }}
-        uses: actions-cool/issues-helper@275328970dbc3bfc3bc43f5fe741bf3638300c0a # v3.3.3
+        uses: actions-cool/issues-helper@e2ff99831a4f13625d35064e2b3dfe65c07a0396 # v3.7.5
         with:
           actions: 'create-comment'
           token: ${{ steps.generate-token.outputs.token }}

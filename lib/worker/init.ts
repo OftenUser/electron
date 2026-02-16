@@ -6,9 +6,6 @@ const Module = require('module') as NodeJS.ModuleInternal;
 // init.js, we need to restore it here.
 process.argv.splice(1, 1);
 
-// Clear search paths.
-require('../common/reset-search-paths');
-
 // Import common settings.
 require('@electron/internal/common/init');
 
@@ -16,9 +13,17 @@ require('@electron/internal/common/init');
 const { hasSwitch, getSwitchValue } = process._linkedBinding('electron_common_command_line');
 
 // Export node bindings to global.
-const { makeRequireFunction } = __non_webpack_require__('internal/modules/helpers');
+const { makeRequireFunction } = __non_webpack_require__('internal/modules/helpers') as typeof import('@node/lib/internal/modules/helpers');
 global.module = new Module('electron/js2c/worker_init');
-global.require = makeRequireFunction(global.module);
+global.require = makeRequireFunction(global.module) as NodeRequire;
+
+// See WebWorkerObserver::WorkerScriptReadyForEvaluation.
+if ((globalThis as any).blinkfetch) {
+  const keys = ['fetch', 'Response', 'FormData', 'Request', 'Headers', 'EventSource'];
+  for (const key of keys) {
+    (globalThis as any)[key] = (globalThis as any)[`blink${key}`];
+  }
+}
 
 // Set the __filename to the path of html file if it is file: protocol.
 // NB. 'self' isn't defined in an AudioWorklet.

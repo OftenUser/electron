@@ -6,11 +6,10 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
-#include "base/functional/bind.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/path_service.h"
 #include "base/values.h"
@@ -20,9 +19,6 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/notification_details.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/browser/notification_source.h"
 #include "electron/buildflags/buildflags.h"
 #include "extensions/browser/api/app_runtime/app_runtime_api.h"
 #include "extensions/browser/extension_registry.h"
@@ -32,7 +28,6 @@
 #include "extensions/browser/service_worker_manager.h"
 #include "extensions/browser/user_script_manager.h"
 #include "extensions/common/constants.h"
-#include "extensions/common/file_util.h"
 #include "shell/browser/extensions/electron_extension_loader.h"
 
 #if BUILDFLAG(ENABLE_PDF_VIEWER)
@@ -92,24 +87,30 @@ void ElectronExtensionSystem::InitForRegularProfile(bool extensions_enabled) {
   management_policy_ = std::make_unique<ManagementPolicy>();
 }
 
-std::unique_ptr<base::Value::Dict> ParseManifest(
-    base::StringPiece manifest_contents) {
+#if BUILDFLAG(ENABLE_PDF_VIEWER)
+namespace {
+
+std::unique_ptr<base::DictValue> ParseManifest(
+    const std::string_view manifest_contents) {
   JSONStringValueDeserializer deserializer(manifest_contents);
   std::unique_ptr<base::Value> manifest =
       deserializer.Deserialize(nullptr, nullptr);
 
   if (!manifest.get() || !manifest->is_dict()) {
     LOG(ERROR) << "Failed to parse extension manifest.";
-    return std::unique_ptr<base::Value::Dict>();
+    return {};
   }
-  return std::make_unique<base::Value::Dict>(std::move(manifest->GetDict()));
+  return std::make_unique<base::DictValue>(std::move(*manifest).TakeDict());
 }
 
+}  // namespace
+#endif  // if BUILDFLAG(ENABLE_PDF_VIEWER)
+
 void ElectronExtensionSystem::LoadComponentExtensions() {
-  std::string utf8_error;
 #if BUILDFLAG(ENABLE_PDF_VIEWER)
+  std::u16string error;
   std::string pdf_manifest_string = pdf_extension_util::GetManifest();
-  std::unique_ptr<base::Value::Dict> pdf_manifest =
+  std::unique_ptr<base::DictValue> pdf_manifest =
       ParseManifest(pdf_manifest_string);
   if (pdf_manifest) {
     base::FilePath root_directory;
@@ -118,7 +119,7 @@ void ElectronExtensionSystem::LoadComponentExtensions() {
     scoped_refptr<const Extension> pdf_extension =
         extensions::Extension::Create(
             root_directory, extensions::mojom::ManifestLocation::kComponent,
-            *pdf_manifest, extensions::Extension::REQUIRE_KEY, &utf8_error);
+            *pdf_manifest, extensions::Extension::REQUIRE_KEY, &error);
     extension_loader_->registrar()->AddExtension(pdf_extension);
   }
 #endif
@@ -189,19 +190,11 @@ void ElectronExtensionSystem::InstallUpdate(
     bool install_immediately,
     InstallUpdateCallback install_update_callback) {
   NOTREACHED();
-  base::DeletePathRecursively(temp_dir);
-}
-
-bool ElectronExtensionSystem::FinishDelayedInstallationIfReady(
-    const std::string& extension_id,
-    bool install_immediately) {
-  NOTREACHED();
-  return false;
 }
 
 void ElectronExtensionSystem::PerformActionBasedOnOmahaAttributes(
     const std::string& extension_id,
-    const base::Value::Dict& attributes) {
+    const base::DictValue& attributes) {
   NOTREACHED();
 }
 

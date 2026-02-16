@@ -74,45 +74,22 @@ describe('keyboard input', () => {
 Furthermore, WebdriverIO allows you to access Electron APIs to get static information about your application:
 
 ```js @ts-nocheck
-import { browser, $, expect } from '@wdio/globals'
+import { browser } from '@wdio/globals'
 
-describe('when the make smaller button is clicked', () => {
-  it('should decrease the window height and width by 10 pixels', async () => {
-    const boundsBefore = await browser.electron.browserWindow('getBounds')
-    expect(boundsBefore.width).toEqual(210)
-    expect(boundsBefore.height).toEqual(310)
-
-    await $('.make-smaller').click()
-    const boundsAfter = await browser.electron.browserWindow('getBounds')
-    expect(boundsAfter.width).toEqual(200)
-    expect(boundsAfter.height).toEqual(300)
-  })
-})
-```
-
-or to retrieve other Electron process information:
-
-```js @ts-nocheck
-import fs from 'node:fs'
-import path from 'node:path'
-import { browser, expect } from '@wdio/globals'
-
-const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), { encoding: 'utf-8' }))
-const { name, version } = packageJson
-
-describe('electron APIs', () => {
-  it('should retrieve app metadata through the electron API', async () => {
-    const appName = await browser.electron.app('getName')
-    expect(appName).toEqual(name)
-    const appVersion = await browser.electron.app('getVersion')
-    expect(appVersion).toEqual(version)
-  })
-
-  it('should pass args through to the launched application', async () => {
-    // custom args are set in the wdio.conf.js file as they need to be set before WDIO starts
-    const argv = await browser.electron.mainProcess('argv')
-    expect(argv).toContain('--foo')
-    expect(argv).toContain('--bar=baz')
+describe('trigger message modal', async () => {
+  it('message modal can be triggered from a test', async () => {
+    await browser.electron.execute(
+      (electron, param1, param2, param3) => {
+        const appWindow = electron.BrowserWindow.getFocusedWindow()
+        electron.dialog.showMessageBox(appWindow, {
+          message: 'Hello World!',
+          detail: `${param1} + ${param2} + ${param3} = ${param1 + param2 + param3}`
+        })
+      },
+      1,
+      2,
+      3
+    )
   })
 })
 ```
@@ -165,6 +142,7 @@ ChromeDriver and where to find the binary of your Electron app:
 
 ```js title='test.js' @ts-expect-error=[1]
 const webdriver = require('selenium-webdriver')
+
 const driver = new webdriver.Builder()
   // The "9515" is the port opened by ChromeDriver.
   .usingServer('http://localhost:9515')
@@ -196,30 +174,17 @@ support via Electron's support for the [Chrome DevTools Protocol][] (CDP).
 
 ### Install dependencies
 
-You can install Playwright through your preferred Node.js package manager. The Playwright team
-recommends using the `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` environment variable to avoid
-unnecessary browser downloads when testing an Electron app.
-
-```sh npm2yarn
-PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --save-dev playwright
-```
-
-Playwright also comes with its own test runner, Playwright Test, which is built for end-to-end
-testing. You can also install it as a dev dependency in your project:
+You can install Playwright through your preferred Node.js package manager. It comes with its
+own [test runner][playwright-intro], which is built for end-to-end testing:
 
 ```sh npm2yarn
 npm install --save-dev @playwright/test
 ```
 
 :::caution Dependencies
-This tutorial was written `playwright@1.16.3` and `@playwright/test@1.16.3`. Check out
+This tutorial was written with `@playwright/test@1.52.0`. Check out
 [Playwright's releases][playwright-releases] page to learn about
 changes that might affect the code below.
-:::
-
-:::info Using third-party test runners
-If you're interested in using an alternative test runner (e.g. Jest or Mocha), check out
-Playwright's [Third-Party Test Runner][playwright-test-runners] guide.
 :::
 
 ### Write your tests
@@ -229,11 +194,10 @@ To point this API to your Electron app, you can pass the path to your main proce
 entry point (here, it is `main.js`).
 
 ```js {5} @ts-nocheck
-const { _electron: electron } = require('playwright')
-const { test } = require('@playwright/test')
+import { test, _electron as electron } from '@playwright/test'
 
 test('launch app', async () => {
-  const electronApp = await electron.launch({ args: ['main.js'] })
+  const electronApp = await electron.launch({ args: ['.'] })
   // close app
   await electronApp.close()
 })
@@ -242,12 +206,11 @@ test('launch app', async () => {
 After that, you will access to an instance of Playwright's `ElectronApp` class. This
 is a powerful class that has access to main process modules for example:
 
-```js {6-11} @ts-nocheck
-const { _electron: electron } = require('playwright')
-const { test } = require('@playwright/test')
+```js {5-10} @ts-nocheck
+import { test, _electron as electron } from '@playwright/test'
 
 test('get isPackaged', async () => {
-  const electronApp = await electron.launch({ args: ['main.js'] })
+  const electronApp = await electron.launch({ args: ['.'] })
   const isPackaged = await electronApp.evaluate(async ({ app }) => {
     // This runs in Electron's main process, parameter here is always
     // the result of the require('electron') in the main app script.
@@ -263,11 +226,10 @@ It can also create individual [Page][playwright-page] objects from Electron Brow
 For example, to grab the first BrowserWindow and save a screenshot:
 
 ```js {6-7} @ts-nocheck
-const { _electron: electron } = require('playwright')
-const { test } = require('@playwright/test')
+import { test, _electron as electron } from '@playwright/test'
 
 test('save screenshot', async () => {
-  const electronApp = await electron.launch({ args: ['main.js'] })
+  const electronApp = await electron.launch({ args: ['.'] })
   const window = await electronApp.firstWindow()
   await window.screenshot({ path: 'intro.png' })
   // close app
@@ -275,12 +237,11 @@ test('save screenshot', async () => {
 })
 ```
 
-Putting all this together using the PlayWright Test runner, let's create a `example.spec.js`
+Putting all this together using the Playwright test-runner, let's create a `example.spec.js`
 test file with a single test and assertion:
 
 ```js title='example.spec.js' @ts-nocheck
-const { _electron: electron } = require('playwright')
-const { test, expect } = require('@playwright/test')
+import { test, expect, _electron as electron } from '@playwright/test'
 
 test('example test', async () => {
   const electronApp = await electron.launch({ args: ['.'] })
@@ -316,6 +277,7 @@ Running 1 test using 1 worker
 :::info
 Playwright Test will automatically run any files matching the `.*(test|spec)\.(js|ts|mjs)` regex.
 You can customize this match in the [Playwright Test configuration options][playwright-test-config].
+It also works with TypeScript out of the box.
 :::
 
 :::tip Further reading
@@ -333,8 +295,9 @@ To create a custom driver, we'll use Node.js' [`child_process`](https://nodejs.o
 The test suite will spawn the Electron process, then establish a simple messaging protocol:
 
 ```js title='testDriver.js' @ts-nocheck
-const childProcess = require('node:child_process')
 const electronPath = require('electron')
+
+const childProcess = require('node:child_process')
 
 // spawn the process
 const env = { /* ... */ }
@@ -452,8 +415,10 @@ framework of your choosing. The following example uses
 or Mocha would work as well:
 
 ```js title='test.js' @ts-nocheck
-const test = require('ava')
 const electronPath = require('electron')
+
+const test = require('ava')
+
 const { TestDriver } = require('./testDriver')
 
 const app = new TestDriver({
@@ -473,10 +438,10 @@ test.after.always('cleanup', async t => {
 
 [chrome-driver]: https://sites.google.com/chromium.org/driver/
 [Puppeteer]: https://github.com/puppeteer/puppeteer
+[playwright-intro]: https://playwright.dev/docs/intro
 [playwright-electron]: https://playwright.dev/docs/api/class-electron/
 [playwright-electronapplication]: https://playwright.dev/docs/api/class-electronapplication
 [playwright-page]: https://playwright.dev/docs/api/class-page
-[playwright-releases]: https://github.com/microsoft/playwright/releases
+[playwright-releases]: https://playwright.dev/docs/release-notes
 [playwright-test-config]: https://playwright.dev/docs/api/class-testconfig#test-config-test-match
-[playwright-test-runners]: https://playwright.dev/docs/test-runners/
 [Chrome DevTools Protocol]: https://chromedevtools.github.io/devtools-protocol/

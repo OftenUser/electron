@@ -7,25 +7,29 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
-#include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
-#include "chrome/browser/predictors/preconnect_manager.h"
+
+#include "base/files/file_path.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/media_stream_request.h"
-#include "content/public/browser/resource_context.h"
-#include "electron/buildflags/buildflags.h"
-#include "gin/arguments.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "services/network/public/mojom/network_context.mojom.h"
-#include "services/network/public/mojom/url_loader_factory.mojom.h"
-#include "shell/browser/media/media_device_id_salt.h"
+#include "services/network/public/mojom/ssl_config.mojom.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 
 class PrefService;
 class ValueMapPrefStore;
+
+namespace content {
+class PreconnectManager;
+}  // namespace content
+
+namespace gin {
+class Arguments;
+}
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -35,118 +39,64 @@ namespace storage {
 class SpecialStoragePolicy;
 }
 
-#if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
-namespace extensions {
-class ElectronExtensionSystem;
-}
-#endif
-
-namespace v8 {
-template <typename T>
-class Local;
-class Isolate;
-class Value;
-}  // namespace v8
-
 namespace electron {
 
-using DevicePermissionMap =
-    std::map<blink::PermissionType,
-             std::map<url::Origin, std::vector<std::unique_ptr<base::Value>>>>;
-
+class CookieChangeNotifier;
 class ElectronDownloadManagerDelegate;
 class ElectronPermissionManager;
-class CookieChangeNotifier;
+class ElectronPreconnectManagerDelegate;
+class MediaDeviceIDSalt;
+class ProtocolRegistry;
 class ResolveProxyHelper;
 class WebViewManager;
-class ProtocolRegistry;
 
 using DisplayMediaResponseCallbackJs =
     base::OnceCallback<void(gin::Arguments* args)>;
 using DisplayMediaRequestHandler =
     base::RepeatingCallback<void(const content::MediaStreamRequest&,
                                  DisplayMediaResponseCallbackJs)>;
-using PartitionOrPath =
-    std::variant<std::reference_wrapper<const std::string>,
-                 std::reference_wrapper<const base::FilePath>>;
-
 class ElectronBrowserContext : public content::BrowserContext {
  public:
   // disable copy
   ElectronBrowserContext(const ElectronBrowserContext&) = delete;
   ElectronBrowserContext& operator=(const ElectronBrowserContext&) = delete;
 
-  // partition_id => browser_context
-  struct PartitionKey {
-    enum class KeyType { Partition, FilePath };
-    std::string location;
-    bool in_memory;
-    KeyType partition_type;
+  [[nodiscard]] static std::vector<ElectronBrowserContext*> BrowserContexts();
 
-    PartitionKey(const std::string& partition, bool in_memory)
-        : location(partition),
-          in_memory(in_memory),
-          partition_type(KeyType::Partition) {}
-    explicit PartitionKey(const base::FilePath& file_path)
-        : location(file_path.AsUTF8Unsafe()),
-          in_memory(false),
-          partition_type(KeyType::FilePath) {}
+  [[nodiscard]] static bool IsValidContext(const void* context);
 
-    bool operator<(const PartitionKey& other) const {
-      if (partition_type == KeyType::Partition) {
-        if (location == other.location)
-          return in_memory < other.in_memory;
-        return location < other.location;
-      } else {
-        if (location == other.location)
-          return false;
-        return location < other.location;
-      }
-    }
-
-    bool operator==(const PartitionKey& other) const {
-      if (partition_type == KeyType::Partition) {
-        return (location == other.location) && (in_memory < other.in_memory);
-      } else {
-        if (location == other.location)
-          return true;
-        return false;
-      }
-    }
-  };
-
-  using BrowserContextMap =
-      std::map<PartitionKey, std::unique_ptr<ElectronBrowserContext>>;
+  // Get or create the default BrowserContext.
+  static ElectronBrowserContext* GetDefaultBrowserContext(
+      base::DictValue options = {});
 
   // Get or create the BrowserContext according to its |partition| and
   // |in_memory|. The |options| will be passed to constructor when there is no
   // existing BrowserContext.
   static ElectronBrowserContext* From(const std::string& partition,
                                       bool in_memory,
-                                      base::Value::Dict options = {});
+                                      base::DictValue options = {});
 
   // Get or create the BrowserContext using the |path|.
   // The |options| will be passed to constructor when there is no
   // existing BrowserContext.
   static ElectronBrowserContext* FromPath(const base::FilePath& path,
-                                          base::Value::Dict options = {});
+                                          base::DictValue options = {});
 
-  static BrowserContextMap& browser_context_map();
+  static void DestroyAllContexts();
 
   void SetUserAgent(const std::string& user_agent);
   std::string GetUserAgent() const;
-  bool CanUseHttpCache() const;
-  int GetMaxCacheSize() const;
+  bool can_use_http_cache() const { return use_cache_; }
+  int max_cache_size() const { return max_cache_size_; }
   ResolveProxyHelper* GetResolveProxyHelper();
-  predictors::PreconnectManager* GetPreconnectManager();
+  content::PreconnectManager* GetPreconnectManager();
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory();
 
   std::string GetMediaDeviceIDSalt();
 
   // content::BrowserContext:
-  base::FilePath GetPath() override;
+  base::FilePath GetPath() const override;
   bool IsOffTheRecord() override;
-  content::ResourceContext* GetResourceContext() override;
   std::unique_ptr<content::ZoomLevelDelegate> CreateZoomLevelDelegate(
       const base::FilePath& partition_path) override;
   content::PushMessagingService* GetPushMessagingService() override;
@@ -167,6 +117,8 @@ class ElectronBrowserContext : public content::BrowserContext {
   content::StorageNotificationService* GetStorageNotificationService() override;
   content::ReduceAcceptLanguageControllerDelegate*
   GetReduceAcceptLanguageControllerDelegate() override;
+  content::FileSystemAccessPermissionContext*
+  GetFileSystemAccessPermissionContext() override;
 
   CookieChangeNotifier* cookie_change_notifier() const {
     return cookie_change_notifier_.get();
@@ -175,18 +127,6 @@ class ElectronBrowserContext : public content::BrowserContext {
   ValueMapPrefStore* in_memory_pref_store() const {
     return in_memory_pref_store_.get();
   }
-  base::WeakPtr<ElectronBrowserContext> GetWeakPtr() {
-    return weak_factory_.GetWeakPtr();
-  }
-
-#if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
-  extensions::ElectronExtensionSystem* extension_system() {
-    // Guard usages of extension_system() with !IsOffTheRecord()
-    // There is no extension system for in-memory sessions
-    DCHECK(!IsOffTheRecord());
-    return extension_system_;
-  }
-#endif
 
   ProtocolRegistry* protocol_registry() const {
     return protocol_registry_.get();
@@ -222,11 +162,19 @@ class ElectronBrowserContext : public content::BrowserContext {
                              blink::PermissionType permissionType);
 
  private:
+  using DevicePermissionMap = std::map<
+      blink::PermissionType,
+      std::map<url::Origin, std::vector<std::unique_ptr<base::Value>>>>;
+
+  using PartitionOrPath =
+      std::variant<std::reference_wrapper<const std::string>,
+                   std::reference_wrapper<const base::FilePath>>;
+
   ElectronBrowserContext(const PartitionOrPath partition_location,
                          bool in_memory,
-                         base::Value::Dict options);
+                         base::DictValue options);
 
-  ElectronBrowserContext(base::FilePath partition, base::Value::Dict options);
+  ElectronBrowserContext(base::FilePath partition, base::DictValue options);
 
   static void DisplayMediaDeviceChosen(
       const content::MediaStreamRequest& request,
@@ -236,12 +184,7 @@ class ElectronBrowserContext : public content::BrowserContext {
   // Initialize pref registry.
   void InitPrefs();
 
-  bool DoesDeviceMatch(const base::Value& device,
-                       const base::Value* device_to_compare,
-                       blink::PermissionType permission_type);
-
   scoped_refptr<ValueMapPrefStore> in_memory_pref_store_;
-  std::unique_ptr<content::ResourceContext> resource_context_;
   std::unique_ptr<CookieChangeNotifier> cookie_change_notifier_;
   std::unique_ptr<PrefService> prefs_;
   std::unique_ptr<ElectronDownloadManagerDelegate> download_manager_delegate_;
@@ -250,19 +193,16 @@ class ElectronBrowserContext : public content::BrowserContext {
   std::unique_ptr<MediaDeviceIDSalt> media_device_id_salt_;
   scoped_refptr<ResolveProxyHelper> resolve_proxy_helper_;
   scoped_refptr<storage::SpecialStoragePolicy> storage_policy_;
-  std::unique_ptr<predictors::PreconnectManager> preconnect_manager_;
+  std::unique_ptr<content::PreconnectManager> preconnect_manager_;
+  std::unique_ptr<ElectronPreconnectManagerDelegate>
+      preconnect_manager_delegate_;
   std::unique_ptr<ProtocolRegistry> protocol_registry_;
 
-  absl::optional<std::string> user_agent_;
+  std::optional<std::string> user_agent_;
   base::FilePath path_;
   bool in_memory_ = false;
   bool use_cache_ = true;
   int max_cache_size_ = 0;
-
-#if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
-  // Owned by the KeyedService system.
-  raw_ptr<extensions::ElectronExtensionSystem> extension_system_;
-#endif
 
   // Shared URLLoaderFactory.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
@@ -274,8 +214,6 @@ class ElectronBrowserContext : public content::BrowserContext {
 
   // In-memory cache that holds objects that have been granted permissions.
   DevicePermissionMap granted_devices_;
-
-  base::WeakPtrFactory<ElectronBrowserContext> weak_factory_{this};
 };
 
 }  // namespace electron

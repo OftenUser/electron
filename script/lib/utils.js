@@ -1,16 +1,16 @@
-const { GitProcess } = require('dugite');
+const chalk = require('chalk');
+
+const childProcess = require('node:child_process');
 const fs = require('node:fs');
-const klaw = require('klaw');
 const os = require('node:os');
 const path = require('node:path');
 
 const ELECTRON_DIR = path.resolve(__dirname, '..', '..');
 const SRC_DIR = path.resolve(ELECTRON_DIR, '..');
 
-require('colors');
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-const pass = '✓'.green;
-const fail = '✗'.red;
+const pass = chalk.green('✓');
+const fail = chalk.red('✗');
 
 function getElectronExec () {
   const OUT_DIR = getOutDir();
@@ -61,13 +61,16 @@ function getAbsoluteElectronExec () {
   return path.resolve(SRC_DIR, getElectronExec());
 }
 
-async function handleGitCall (args, gitDir) {
-  const details = await GitProcess.exec(args, gitDir);
-  if (details.exitCode === 0) {
-    return details.stdout.replace(/^\*|\s+|\s+$/, '');
+function handleGitCall (args, gitDir) {
+  const result = childProcess.spawnSync('git', args, {
+    cwd: gitDir,
+    encoding: 'utf8',
+    stdio: ['inherit', 'pipe', 'pipe']
+  });
+  if (result.status === 0) {
+    return result.stdout.replace(/^\*|\s+|\s+$/, '');
   } else {
-    const error = GitProcess.parseError(details.stderr);
-    console.log(`${fail} couldn't parse git process call: `, error);
+    console.log(`${fail} couldn't parse git process call: `, result.stderr);
     process.exit(1);
   }
 }
@@ -130,18 +133,13 @@ function chunkFilenames (filenames, offset = 0) {
  * @returns {Promise<string[]>}
 */
 async function findMatchingFiles (top, test) {
-  return new Promise(resolve => {
-    const matches = [];
-    klaw(top, {
-      filter: f => path.basename(f) !== '.bin'
-    })
-      .on('end', () => resolve(matches))
-      .on('data', item => {
-        if (test(item.path)) {
-          matches.push(item.path);
-        }
-      });
-  });
+  return fs.promises.readdir(top, { encoding: 'utf8', recursive: true })
+    .then(files => {
+      return files
+        .filter(name => path.basename(name) !== '.bin')
+        .filter(name => test(name))
+        .map(name => path.join(top, name));
+    });
 }
 
 module.exports = {

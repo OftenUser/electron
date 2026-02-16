@@ -9,13 +9,13 @@
 #include <string>
 #include <vector>
 
-#include "base/compiler_specific.h"
-#include "build/build_config.h"
+#include "content/public/browser/frame_tree_node_id.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/kiosk/kiosk_delegate.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
+#include "extensions/browser/safe_browsing_delegate.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
+#include "url/origin.h"
 
 class PrefService;
 
@@ -25,8 +25,16 @@ class KioskDelegate;
 class ProcessManagerDelegate;
 class ElectronProcessManagerDelegate;
 class ProcessMap;
+class SafeBrowsingDelegate;
 class ElectronComponentExtensionResourceManager;
 }  // namespace extensions
+
+namespace mojo {
+template <typename T>
+class PendingReceiver;
+template <typename T>
+class PendingRemote;
+}  // namespace mojo
 
 namespace electron {
 
@@ -45,6 +53,7 @@ class ElectronExtensionsBrowserClient
       const ElectronExtensionsBrowserClient&) = delete;
 
   // ExtensionsBrowserClient overrides:
+  void Init() override;
   bool IsShuttingDown() override;
   bool AreExtensionsDisabled(const base::CommandLine& command_line,
                              content::BrowserContext* context) override;
@@ -57,14 +66,11 @@ class ElectronExtensionsBrowserClient
   content::BrowserContext* GetOriginalContext(
       content::BrowserContext* context) override;
   content::BrowserContext* GetContextRedirectedToOriginal(
-      content::BrowserContext* context,
-      bool force_guest_profile) override;
+      content::BrowserContext* context) override;
   content::BrowserContext* GetContextOwnInstance(
-      content::BrowserContext* context,
-      bool force_guest_profile) override;
+      content::BrowserContext* context) override;
   content::BrowserContext* GetContextForOriginalOnly(
-      content::BrowserContext* context,
-      bool force_guest_profile) override;
+      content::BrowserContext* context) override;
   bool AreExtensionsDisabledForContext(
       content::BrowserContext* context) override;
   bool IsGuestSession(content::BrowserContext* context) const override;
@@ -93,7 +99,8 @@ class ElectronExtensionsBrowserClient
       bool is_incognito,
       const extensions::Extension* extension,
       const extensions::ExtensionSet& extensions,
-      const extensions::ProcessMap& process_map) override;
+      const extensions::ProcessMap& process_map,
+      const GURL& upstream_url) override;
   PrefService* GetPrefServiceForContext(
       content::BrowserContext* context) override;
   void GetEarlyExtensionPrefsObservers(
@@ -102,6 +109,11 @@ class ElectronExtensionsBrowserClient
       const override;
   extensions::ProcessManagerDelegate* GetProcessManagerDelegate()
       const override;
+  mojo::PendingRemote<network::mojom::URLLoaderFactory>
+  GetControlledFrameEmbedderURLLoader(
+      const url::Origin& app_origin,
+      content::FrameTreeNodeId frame_tree_node_id,
+      content::BrowserContext* browser_context) override;
   std::unique_ptr<extensions::ExtensionHostDelegate>
   CreateExtensionHostDelegate() override;
   bool DidVersionUpdate(content::BrowserContext* context) override;
@@ -120,21 +132,22 @@ class ElectronExtensionsBrowserClient
   void BroadcastEventToRenderers(
       extensions::events::HistogramValue histogram_value,
       const std::string& event_name,
-      base::Value::List args,
+      base::ListValue args,
       bool dispatch_to_off_the_record_profiles) override;
   extensions::ExtensionCache* GetExtensionCache() override;
   bool IsBackgroundUpdateAllowed() override;
   bool IsMinBrowserVersionSupported(const std::string& min_version) override;
+  void CreateExtensionWebContentsObserver(
+      content::WebContents* web_contents) override;
   extensions::ExtensionWebContentsObserver* GetExtensionWebContentsObserver(
       content::WebContents* web_contents) override;
   extensions::KioskDelegate* GetKioskDelegate() override;
-  bool IsLockScreenContext(content::BrowserContext* context) override;
   std::string GetApplicationLocale() override;
-  std::string GetUserAgent() const override;
   void RegisterBrowserInterfaceBindersForFrame(
       mojo::BinderMapWithContext<content::RenderFrameHost*>* map,
       content::RenderFrameHost* render_frame_host,
       const extensions::Extension* extension) const override;
+  extensions::SafeBrowsingDelegate* GetSafeBrowsingDelegate() override;
 
   // Sets the API client.
   void SetAPIClientForTest(extensions::ExtensionsAPIClient* api_client);
@@ -151,6 +164,8 @@ class ElectronExtensionsBrowserClient
   std::unique_ptr<extensions::ExtensionCache> extension_cache_;
 
   std::unique_ptr<extensions::KioskDelegate> kiosk_delegate_;
+
+  std::unique_ptr<extensions::SafeBrowsingDelegate> safe_browsing_delegate_;
 
   std::unique_ptr<extensions::ElectronComponentExtensionResourceManager>
       resource_manager_;

@@ -7,6 +7,7 @@
 #include "base/no_destructor.h"
 #include "gin/converter.h"
 #include "shell/common/gin_helper/wrappable_base.h"
+#include "v8/include/v8-function.h"
 
 namespace gin_helper {
 
@@ -23,19 +24,21 @@ v8::Global<v8::FunctionTemplate>* GetIsDestroyedFunc() {
 }
 
 void DestroyFunc(const v8::FunctionCallbackInfo<v8::Value>& info) {
-  v8::Local<v8::Object> holder = info.Holder();
+  v8::Local<v8::Object> holder = info.This();
   if (Destroyable::IsDestroyed(holder))
     return;
 
   // TODO(zcbenz): gin_helper::Wrappable will be removed.
   delete static_cast<gin_helper::WrappableBase*>(
-      holder->GetAlignedPointerFromInternalField(0));
-  holder->SetAlignedPointerInInternalField(0, nullptr);
+      holder->GetAlignedPointerFromInternalField(
+          0, v8::kEmbedderDataTypeTagDefault));
+  holder->SetAlignedPointerInInternalField(0, nullptr,
+                                           v8::kEmbedderDataTypeTagDefault);
 }
 
 void IsDestroyedFunc(const v8::FunctionCallbackInfo<v8::Value>& info) {
   info.GetReturnValue().Set(gin::ConvertToV8(
-      info.GetIsolate(), Destroyable::IsDestroyed(info.Holder())));
+      info.GetIsolate(), Destroyable::IsDestroyed(info.This())));
 }
 
 }  // namespace
@@ -45,7 +48,8 @@ bool Destroyable::IsDestroyed(v8::Local<v8::Object> object) {
   // An object is considered destroyed if it has no internal pointer or its
   // internal has been destroyed.
   return object->InternalFieldCount() == 0 ||
-         object->GetAlignedPointerFromInternalField(0) == nullptr;
+         object->GetAlignedPointerFromInternalField(
+             0, v8::kEmbedderDataTypeTagDefault) == nullptr;
 }
 
 // static

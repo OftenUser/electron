@@ -32,7 +32,7 @@ process, see [webContents.send][web-contents-send] for more information.
 
 ## Methods
 
-The `ipcMain` module has the following method to listen for events:
+The `ipcMain` module has the following methods to listen for events:
 
 ### `ipcMain.on(channel, listener)`
 
@@ -44,6 +44,16 @@ The `ipcMain` module has the following method to listen for events:
 Listens to `channel`, when a new message arrives `listener` would be called with
 `listener(event, args...)`.
 
+### `ipcMain.off(channel, listener)`
+
+* `channel` string
+* `listener` Function
+  * `event` [IpcMainEvent][ipc-main-event]
+  * `...args` any[]
+
+Removes the specified `listener` from the listener array for the specified
+`channel`.
+
 ### `ipcMain.once(channel, listener)`
 
 * `channel` string
@@ -54,25 +64,33 @@ Listens to `channel`, when a new message arrives `listener` would be called with
 Adds a one time `listener` function for the event. This `listener` is invoked
 only the next time a message is sent to `channel`, after which it is removed.
 
+### `ipcMain.addListener(channel, listener)`
+
+* `channel` string
+* `listener` Function
+  * `event` [IpcMainEvent][ipc-main-event]
+  * `...args` any[]
+
+Alias for [`ipcMain.on`](#ipcmainonchannel-listener).
+
 ### `ipcMain.removeListener(channel, listener)`
 
 * `channel` string
 * `listener` Function
   * `...args` any[]
 
-Removes the specified `listener` from the listener array for the specified
-`channel`.
+Alias for [`ipcMain.off`](#ipcmainoffchannel-listener).
 
 ### `ipcMain.removeAllListeners([channel])`
 
 * `channel` string (optional)
 
-Removes listeners of the specified `channel`.
+Removes all listeners from the specified `channel`. Removes all listeners from all channels if no channel is specified.
 
 ### `ipcMain.handle(channel, listener)`
 
 * `channel` string
-* `listener` Function<Promise\<any&#62; | any&#62;
+* `listener` Function\<Promise\<any\> | any\>
   * `event` [IpcMainInvokeEvent][ipc-main-invoke-event]
   * `...args` any[]
 
@@ -109,7 +127,7 @@ provided to the renderer process. Please refer to
 ### `ipcMain.handleOnce(channel, listener)`
 
 * `channel` string
-* `listener` Function<Promise\<any&#62; | any&#62;
+* `listener` Function\<Promise\<any\> | any\>
   * `event` [IpcMainInvokeEvent][ipc-main-invoke-event]
   * `...args` any[]
 

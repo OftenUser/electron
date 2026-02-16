@@ -13,22 +13,27 @@
 #include <memory>
 #include <string>
 
-#include "base/command_line.h"
 #include "chrome/browser/browser_process.h"
 #include "components/embedder_support/origin_trials/origin_trials_settings_storage.h"
-#include "components/prefs/pref_service.h"
 #include "components/prefs/value_map_pref_store.h"
 #include "printing/buildflags/buildflags.h"
 #include "services/network/public/cpp/network_quality_tracker.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "shell/browser/net/system_network_context_manager.h"
+#include "ui/base/unowned_user_data/unowned_user_data_host.h"
 
 #if BUILDFLAG(IS_LINUX)
 #include "components/os_crypt/sync/key_storage_util_linux.h"
 #endif
 
+class PrefService;
+
 namespace printing {
 class PrintJobManager;
+}
+
+namespace electron {
+class ResolveProxyHelper;
 }
 
 // Empty definition for std::unique_ptr, rather than a forward declaration
@@ -47,35 +52,43 @@ class BrowserProcessImpl : public BrowserProcess {
 
   static void ApplyProxyModeFromCommandLine(ValueMapPrefStore* pref_store);
 
-  BuildState* GetBuildState() override;
   void PostEarlyInitialization();
   void PreCreateThreads();
   void PreMainMessageLoopRun();
   void PostDestroyThreads() {}
   void PostMainMessageLoopRun();
-
   void SetSystemLocale(const std::string& locale);
   const std::string& GetSystemLocale() const;
+  electron::ResolveProxyHelper* GetResolveProxyHelper();
 
 #if BUILDFLAG(IS_LINUX)
   void SetLinuxStorageBackend(os_crypt::SelectedLinuxBackend selected_backend);
-  const std::string& GetLinuxStorageBackend() const;
+  [[nodiscard]] const std::string& linux_storage_backend() const {
+    return selected_linux_storage_backend_;
+  }
 #endif
 
+  // BrowserProcess
+  BuildState* GetBuildState() override;
+  GlobalFeatures* GetFeatures() override;
+  void CreateGlobalFeaturesForTesting() {}
   void EndSession() override {}
   void FlushLocalStateAndReply(base::OnceClosure reply) override {}
   bool IsShuttingDown() override;
+  ui::UnownedUserDataHost& GetUnownedUserDataHost() override;
+  const ui::UnownedUserDataHost& GetUnownedUserDataHost() const override;
 
   metrics_services_manager::MetricsServicesManager* GetMetricsServicesManager()
       override;
   metrics::MetricsService* metrics_service() override;
   ProfileManager* profile_manager() override;
   PrefService* local_state() override;
+  signin::ActivePrimaryAccountsMetricsRecorder*
+  active_primary_accounts_metrics_recorder() override;
   scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory()
       override;
   variations::VariationsService* variations_service() override;
   BrowserProcessPlatformPart* platform_part() override;
-  extensions::EventRouterForwarder* extension_event_router_forwarder() override;
   NotificationUIManager* notification_ui_manager() override;
   NotificationPlatformBridge* notification_platform_bridge() override;
   SystemNetworkContextManager* system_network_context_manager() override;
@@ -89,7 +102,9 @@ class BrowserProcessImpl : public BrowserProcess {
   printing::PrintPreviewDialogController* print_preview_dialog_controller()
       override;
   printing::BackgroundPrintingManager* background_printing_manager() override;
+  activity_reporter::ActivityReporter* activity_reporter() override;
   IntranetRedirectDetector* intranet_redirect_detector() override;
+  supervised_user::DeviceParentalControls& device_parental_controls() override;
   DownloadStatusUpdater* download_status_updater() override;
   DownloadRequestLimiter* download_request_limiter() override;
   BackgroundModeManager* background_mode_manager() override;
@@ -98,7 +113,6 @@ class BrowserProcessImpl : public BrowserProcess {
   subresource_filter::RulesetService* subresource_filter_ruleset_service()
       override;
   component_updater::ComponentUpdateService* component_updater() override;
-  MediaFileSystemRegistry* media_file_system_registry() override;
   WebRtcLogUploader* webrtc_log_uploader() override;
   network_time::NetworkTimeTracker* network_time_tracker() override;
   gcm::GCMDriver* gcm_driver() override;
@@ -109,6 +123,9 @@ class BrowserProcessImpl : public BrowserProcess {
   HidSystemTrayIcon* hid_system_tray_icon() override;
   UsbSystemTrayIcon* usb_system_tray_icon() override;
   os_crypt_async::OSCryptAsync* os_crypt_async() override;
+  void set_additional_os_crypt_async_provider_for_test(
+      size_t precedence,
+      std::unique_ptr<os_crypt_async::KeyProvider> provider) override;
   void CreateDevToolsProtocolHandler() override {}
   void CreateDevToolsAutoOpener() override {}
   void set_background_mode_manager_for_test(
@@ -120,6 +137,10 @@ class BrowserProcessImpl : public BrowserProcess {
   const std::string& GetApplicationLocale() override;
   printing::PrintJobManager* print_job_manager() override;
   StartupData* startup_data() override;
+
+  ValueMapPrefStore* in_memory_pref_store() const {
+    return in_memory_pref_store_.get();
+  }
 
  private:
   void CreateNetworkQualityObserver();
@@ -137,10 +158,14 @@ class BrowserProcessImpl : public BrowserProcess {
 #endif
   embedder_support::OriginTrialsSettingsStorage origin_trials_settings_storage_;
 
+  scoped_refptr<ValueMapPrefStore> in_memory_pref_store_;
+  scoped_refptr<electron::ResolveProxyHelper> resolve_proxy_helper_;
   std::unique_ptr<network::NetworkQualityTracker> network_quality_tracker_;
   std::unique_ptr<
       network::NetworkQualityTracker::RTTAndThroughputEstimatesObserver>
       network_quality_observer_;
+  std::unique_ptr<supervised_user::DeviceParentalControls>
+      device_parental_controls_;
 
   std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_async_;
 };

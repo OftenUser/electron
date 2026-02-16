@@ -24,7 +24,7 @@ careful to understand that the term "performance" means different things for
 a Node.js backend than it does for an application running on a client.
 
 This list is provided for your convenience – and is, much like our
-[security checklist][security] – not meant to exhaustive. It is probably possible
+[security checklist][security] – not meant to be exhaustive. It is probably possible
 to build a slow Electron app that follows all the steps outlined below. Electron
 is a powerful development platform that enables you, the developer, to do more
 or less whatever you want. All that freedom means that performance is largely
@@ -60,7 +60,7 @@ at once, consider the [Chrome Tracing](https://www.chromium.org/developers/how-t
 ## Checklist: Performance recommendations
 
 Chances are that your app could be a little leaner, faster, and generally less
-resource-hungry if you attempt these steps.
+resource-hungry if you avoid the following common pitfalls.
 
 1. [Carelessly including modules](#1-carelessly-including-modules)
 2. [Loading and running code too soon](#2-loading-and-running-code-too-soon)
@@ -83,7 +83,7 @@ is not in fact the leanest or smallest one available.
 
 The reasoning behind this recommendation is best illustrated with a real-world
 example. During the early days of Electron, reliable detection of network
-connectivity was a problem, resulting many apps to use a module that exposed a
+connectivity was a problem, resulting in many apps using a module that exposed a
 simple `isOnline()` method.
 
 That module detected your network connectivity by attempting to reach out to a
@@ -175,6 +175,7 @@ you might write code that eagerly loads dependencies:
 
 ```js title='parser.js' @ts-expect-error=[2]
 const fs = require('node:fs')
+
 const fooParser = require('foo-parser')
 
 class Parser {

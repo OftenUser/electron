@@ -1,8 +1,9 @@
+import { IPC_MESSAGES } from '@electron/internal/common/ipc-messages';
 import { internalContextBridge } from '@electron/internal/renderer/api/context-bridge';
 import { ipcRendererInternal } from '@electron/internal/renderer/ipc-renderer-internal';
 import * as ipcRendererUtils from '@electron/internal/renderer/ipc-renderer-internal-utils';
+
 import { webFrame } from 'electron/renderer';
-import { IPC_MESSAGES } from '@electron/internal/common/ipc-messages';
 
 const { contextIsolationEnabled } = internalContextBridge;
 
@@ -10,12 +11,14 @@ const { contextIsolationEnabled } = internalContextBridge;
 * 1) Use menu API to show context menu.
 */
 window.onload = function () {
-  if (contextIsolationEnabled) {
-    internalContextBridge.overrideGlobalValueFromIsolatedWorld([
-      'InspectorFrontendHost', 'showContextMenuAtPoint'
-    ], createMenu);
-  } else {
-    window.InspectorFrontendHost!.showContextMenuAtPoint = createMenu;
+  if (window.InspectorFrontendHost) {
+    if (contextIsolationEnabled) {
+      internalContextBridge.overrideGlobalValueFromIsolatedWorld([
+        'InspectorFrontendHost', 'showContextMenuAtPoint'
+      ], createMenu);
+    } else {
+      window.InspectorFrontendHost.showContextMenuAtPoint = createMenu;
+    }
   }
 };
 

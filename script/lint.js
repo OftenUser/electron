@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 
-const crypto = require('node:crypto');
-const { GitProcess } = require('dugite');
-const childProcess = require('node:child_process');
 const { ESLint } = require('eslint');
-const fs = require('node:fs');
 const minimist = require('minimist');
+
+const childProcess = require('node:child_process');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
-const { getCodeBlocks } = require('@electron/lint-roller/dist/lib/markdown');
 
 const { chunkFilenames, findMatchingFiles } = require('./lib/utils');
 
@@ -55,7 +54,7 @@ const CPPLINT_FILTERS = [
 ];
 
 function spawnAndCheckExitCode (cmd, args, opts) {
-  opts = { stdio: 'inherit', ...opts };
+  opts = { stdio: 'inherit', shell: IS_WINDOWS, ...opts };
   const { error, status, signal } = childProcess.spawnSync(cmd, args, opts);
   if (error) {
     // the subprocess failed or timed out
@@ -73,9 +72,28 @@ function spawnAndCheckExitCode (cmd, args, opts) {
   }
 }
 
+async function runEslint (eslint, filenames, { fix, verbose }) {
+  const formatter = await eslint.loadFormatter();
+  let successCount = 0;
+  const results = await eslint.lintFiles(filenames);
+  for (const result of results) {
+    successCount += result.errorCount === 0 ? 1 : 0;
+    if (verbose && result.errorCount === 0 && result.warningCount === 0) {
+      console.log(`${result.filePath}: no errors or warnings`);
+    }
+  }
+  console.log(formatter.format(results));
+  if (fix) {
+    await ESLint.outputFixes(results);
+  }
+
+  return successCount === filenames.length;
+}
+
 function cpplint (args) {
   args.unshift(`--root=${SOURCE_ROOT}`);
-  const result = childProcess.spawnSync(IS_WINDOWS ? 'cpplint.bat' : 'cpplint.py', args, { encoding: 'utf8', shell: true });
+  const cmd = IS_WINDOWS ? 'cpplint.bat' : 'cpplint.py';
+  const result = childProcess.spawnSync(cmd, args, { encoding: 'utf8', shell: true });
   // cpplint.py writes EVERYTHING to stderr, including status messages
   if (result.stderr) {
     for (const line of result.stderr.split(/[\r\n]+/)) {
@@ -99,9 +117,12 @@ const LINTERS = [{
   roots: ['shell'],
   test: filename => filename.endsWith('.cc') || (filename.endsWith('.h') && !isObjCHeader(filename)),
   run: (opts, filenames) => {
+    const env = {
+      CHROMIUM_BUILDTOOLS_PATH: path.resolve(ELECTRON_ROOT, '..', 'buildtools')
+    };
     const clangFormatFlags = opts.fix ? ['--fix'] : [];
     for (const chunk of chunkFilenames(filenames)) {
-      spawnAndCheckExitCode('python3', ['script/run-clang-format.py', ...clangFormatFlags, ...chunk]);
+      spawnAndCheckExitCode('python3', ['script/run-clang-format.py', ...clangFormatFlags, ...chunk], { env });
       cpplint([`--filter=${CPPLINT_FILTERS.join(',')}`, ...chunk]);
     }
   }
@@ -110,8 +131,11 @@ const LINTERS = [{
   roots: ['shell'],
   test: filename => filename.endsWith('.mm') || (filename.endsWith('.h') && isObjCHeader(filename)),
   run: (opts, filenames) => {
+    const env = {
+      CHROMIUM_BUILDTOOLS_PATH: path.resolve(ELECTRON_ROOT, '..', 'buildtools')
+    };
     const clangFormatFlags = opts.fix ? ['--fix'] : [];
-    spawnAndCheckExitCode('python3', ['script/run-clang-format.py', '-r', ...clangFormatFlags, ...filenames]);
+    spawnAndCheckExitCode('python3', ['script/run-clang-format.py', '-r', ...clangFormatFlags, ...filenames], { env });
     const filter = [...CPPLINT_FILTERS, '-readability/braces'];
     cpplint(['--extensions=mm,h', `--filter=${filter.join(',')}`, ...filenames]);
   }
@@ -120,16 +144,16 @@ const LINTERS = [{
   roots: ['script'],
   test: filename => filename.endsWith('.py'),
   run: (opts, filenames) => {
-    const rcfile = path.join(DEPOT_TOOLS, 'pylintrc');
+    const rcfile = path.join(DEPOT_TOOLS, 'pylintrc-2.17');
     const args = ['--rcfile=' + rcfile, ...filenames];
     const env = { PYTHONPATH: path.join(ELECTRON_ROOT, 'script'), ...process.env };
-    spawnAndCheckExitCode('pylint-2.7', args, { env });
+    spawnAndCheckExitCode(IS_WINDOWS ? 'pylint-2.17.bat' : 'pylint-2.17', args, { env });
   }
 }, {
   key: 'javascript',
   roots: ['build', 'default_app', 'lib', 'npm', 'script', 'spec'],
-  ignoreRoots: ['spec/node_modules'],
-  test: filename => filename.endsWith('.js') || filename.endsWith('.ts'),
+  ignoreRoots: ['.github/workflows/node_modules', 'spec/node_modules', 'spec/fixtures/native-addon'],
+  test: filename => filename.endsWith('.js') || filename.endsWith('.ts') || filename.endsWith('.mjs'),
   run: async (opts, filenames) => {
     const eslint = new ESLint({
       // Do not use the lint cache on CI builds
@@ -137,23 +161,10 @@ const LINTERS = [{
       cacheLocation: `node_modules/.eslintcache.${crypto.createHash('md5').update(fs.readFileSync(__filename)).digest('hex')}`,
       extensions: ['.js', '.ts'],
       fix: opts.fix,
-      overrideConfigFile: path.join(ELECTRON_ROOT, '.eslintrc.json'),
       resolvePluginsRelativeTo: ELECTRON_ROOT
     });
-    const formatter = await eslint.loadFormatter();
-    let successCount = 0;
-    const results = await eslint.lintFiles(filenames);
-    for (const result of results) {
-      successCount += result.errorCount === 0 ? 1 : 0;
-      if (opts.verbose && result.errorCount === 0 && result.warningCount === 0) {
-        console.log(`${result.filePath}: no errors or warnings`);
-      }
-    }
-    console.log(formatter.format(results));
-    if (opts.fix) {
-      await ESLint.outputFixes(results);
-    }
-    if (successCount !== filenames.length) {
+    const clean = await runEslint(eslint, filenames, { fix: opts.fix, verbose: opts.verbose });
+    if (!clean) {
       console.error('Linting had errors');
       process.exit(1);
     }
@@ -169,8 +180,6 @@ const LINTERS = [{
         DEPOT_TOOLS_WIN_TOOLCHAIN: '0',
         ...process.env
       };
-      // Users may not have depot_tools in PATH.
-      env.PATH = `${env.PATH}${path.delimiter}${DEPOT_TOOLS}`;
       const args = ['format', filename];
       if (!opts.fix) args.push('--dry-run');
       const result = childProcess.spawnSync('gn', args, { env, stdio: 'inherit', shell: true });
@@ -201,10 +210,9 @@ const LINTERS = [{
       process.exit(1);
     }
 
-    const config = JSON.parse(fs.readFileSync(patchesConfig, 'utf8'));
-    for (const key of Object.keys(config)) {
+    for (const target of JSON.parse(fs.readFileSync(patchesConfig, 'utf8'))) {
       // The directory the config points to should exist
-      const targetPatchesDir = path.resolve(__dirname, '../../..', key);
+      const targetPatchesDir = path.resolve(__dirname, '../../..', target.patch_dir);
       if (!fs.existsSync(targetPatchesDir)) {
         console.error(`target patch directory: "${targetPatchesDir}" does not exist`);
         process.exit(1);
@@ -252,8 +260,10 @@ const LINTERS = [{
 
     const allOk = filenames.length > 0 && filenames.map(f => {
       const patchText = fs.readFileSync(f, 'utf8');
-      const subjectAndDescription = /Subject: (.*?)\n\n([\s\S]*?)\s*(?=diff)/ms.exec(patchText);
-      if (!subjectAndDescription[2]) {
+
+      const regex = /Subject: (.*?)\n\n([\s\S]*?)\s*(?=diff)/ms;
+      const subjectAndDescription = regex.exec(patchText);
+      if (!subjectAndDescription?.[2]) {
         console.warn(`Patch file '${f}' has no description. Every patch must contain a justification for why the patch exists and the plan for its removal.`);
         return false;
       }
@@ -271,14 +281,15 @@ const LINTERS = [{
 }, {
   key: 'md',
   roots: ['.'],
-  ignoreRoots: ['node_modules', 'spec/node_modules'],
+  ignoreRoots: ['.claude', '.git', '.github/workflows/node_modules', 'node_modules', 'spec/node_modules', 'spec/fixtures/native-addon'],
   test: filename => filename.endsWith('.md'),
   run: async (opts, filenames) => {
+    const { getCodeBlocks } = await import('@electron/lint-roller/dist/lib/markdown.js');
     let errors = false;
 
     // Run markdownlint on all Markdown files
     for (const chunk of chunkFilenames(filenames)) {
-      spawnAndCheckExitCode('electron-markdownlint', chunk);
+      spawnAndCheckExitCode('markdownlint-cli2', chunk);
     }
 
     // Run the remaining checks only in docs
@@ -357,6 +368,26 @@ const LINTERS = [{
       }
     }
 
+    const eslint = new ESLint({
+      // Do not use the lint cache on CI builds
+      cache: !process.env.CI,
+      cacheLocation: `node_modules/.eslintcache.${crypto.createHash('md5').update(fs.readFileSync(__filename)).digest('hex')}`,
+      fix: opts.fix,
+      overrideConfigFile: path.join(ELECTRON_ROOT, 'docs', '.eslintrc.json'),
+      resolvePluginsRelativeTo: ELECTRON_ROOT
+    });
+    const clean = await runEslint(
+      eslint,
+      docs.filter(
+        // TODO(dsanders11): Once we move to newer ESLint and the flat config,
+        // switch to using `ignorePatterns` and `warnIgnore: false` instead of
+        // explicitly filtering out this file that we don't want to lint
+        (filename) => !filename.endsWith('docs/breaking-changes.md')
+      ),
+      { fix: opts.fix, verbose: opts.verbose }
+    );
+    errors ||= !clean;
+
     if (errors) {
       process.exit(1);
     }
@@ -399,9 +430,13 @@ function populateLinterWithArgs (linter, opts) {
 }
 
 async function findChangedFiles (top) {
-  const result = await GitProcess.exec(['diff', '--name-only', '--cached'], top);
-  if (result.exitCode !== 0) {
-    console.log('Failed to find changed files', GitProcess.parseError(result.stderr));
+  const result = childProcess.spawnSync('git', ['diff', '--name-only', '--cached'], {
+    cwd: top,
+    encoding: 'utf8',
+    stdio: ['inherit', 'pipe', 'pipe']
+  });
+  if (result.status !== 0) {
+    console.log('Failed to find changed files', result.stderr);
     process.exit(1);
   }
   const relativePaths = result.stdout.split(/\r\n|\r|\n/g);

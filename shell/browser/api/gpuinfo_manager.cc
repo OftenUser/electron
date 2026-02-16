@@ -8,15 +8,18 @@
 
 #include "base/memory/singleton.h"
 #include "base/task/single_thread_task_runner.h"
-#include "content/public/browser/browser_thread.h"
 #include "gpu/config/gpu_info_collector.h"
 #include "shell/browser/api/gpu_info_enumerator.h"
 #include "shell/common/gin_converters/value_converter.h"
+#include "shell/common/gin_helper/promise.h"
+#include "shell/common/thread_restrictions.h"
 
 namespace electron {
 
 GPUInfoManager* GPUInfoManager::GetInstance() {
-  return base::Singleton<GPUInfoManager>::get();
+  // will be deleted by CleanedUpAtExit::DoCleanup
+  static GPUInfoManager* instance = new GPUInfoManager();
+  return instance;
 }
 
 GPUInfoManager::GPUInfoManager()
@@ -28,20 +31,9 @@ GPUInfoManager::~GPUInfoManager() {
   content::GpuDataManagerImpl::GetInstance()->RemoveObserver(this);
 }
 
-// Based on
-// https://chromium.googlesource.com/chromium/src.git/+/69.0.3497.106/content/browser/gpu/gpu_data_manager_impl_private.cc#838
-bool GPUInfoManager::NeedsCompleteGpuInfoCollection() const {
-#if BUILDFLAG(IS_WIN)
-  return gpu_data_manager_->DxdiagDx12VulkanRequested() &&
-         gpu_data_manager_->GetGPUInfo().dx_diagnostics.IsEmpty();
-#else
-  return false;
-#endif
-}
-
 // Should be posted to the task runner
 void GPUInfoManager::ProcessCompleteInfo() {
-  base::Value::Dict result = EnumerateGPUInfo(gpu_data_manager_->GetGPUInfo());
+  base::DictValue result = EnumerateGPUInfo(gpu_data_manager_->GetGPUInfo());
   // We have received the complete information, resolve all promises that
   // were waiting for this info.
   for (auto& promise : complete_info_promise_set_) {
@@ -51,9 +43,6 @@ void GPUInfoManager::ProcessCompleteInfo() {
 }
 
 void GPUInfoManager::OnGpuInfoUpdate() {
-  // Ignore if called when not asked for complete GPUInfo
-  if (NeedsCompleteGpuInfoCollection())
-    return;
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&GPUInfoManager::ProcessCompleteInfo,
                                 base::Unretained(this)));
@@ -63,13 +52,8 @@ void GPUInfoManager::OnGpuInfoUpdate() {
 void GPUInfoManager::CompleteInfoFetcher(
     gin_helper::Promise<base::Value> promise) {
   complete_info_promise_set_.emplace_back(std::move(promise));
-
-  if (NeedsCompleteGpuInfoCollection()) {
-    gpu_data_manager_->RequestDxdiagDx12VulkanVideoGpuInfoIfNeeded(
-        content::GpuDataManagerImpl::kGpuInfoRequestAll, /* delayed */ false);
-  } else {
-    GPUInfoManager::OnGpuInfoUpdate();
-  }
+  gpu_data_manager_->RequestDx12VulkanVideoGpuInfoIfNeeded(
+      content::GpuDataManagerImpl::kGpuInfoRequestAll, /* delayed */ false);
 }
 
 void GPUInfoManager::FetchCompleteInfo(
@@ -82,13 +66,17 @@ void GPUInfoManager::FetchCompleteInfo(
 // This fetches the info synchronously, so no need to post to the task queue.
 // There cannot be multiple promises as they are resolved synchronously.
 void GPUInfoManager::FetchBasicInfo(gin_helper::Promise<base::Value> promise) {
+#if BUILDFLAG(IS_WIN)
+  // Needed for CollectNPUInformation in gpu/config/gpu_info_collector_win.cc
+  // which calls blocking function base::LoadSystemLibrary.
+  electron::ScopedAllowBlockingForElectron allow_blocking;
+#endif
   gpu::GPUInfo gpu_info;
   CollectBasicGraphicsInfo(&gpu_info);
   promise.Resolve(base::Value(EnumerateGPUInfo(gpu_info)));
 }
 
-base::Value::Dict GPUInfoManager::EnumerateGPUInfo(
-    gpu::GPUInfo gpu_info) const {
+base::DictValue GPUInfoManager::EnumerateGPUInfo(gpu::GPUInfo gpu_info) const {
   GPUInfoEnumerator enumerator;
   gpu_info.EnumerateFields(&enumerator);
   return enumerator.GetDictionary();

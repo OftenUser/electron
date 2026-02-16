@@ -5,6 +5,7 @@
 #include "shell/browser/electron_browser_main_parts.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,20 +14,18 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/i18n/rtl.h"
-#include "base/metrics/field_trial.h"
 #include "base/nix/xdg_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/icon_manager.h"
 #include "chrome/browser/ui/color/chrome_color_mixers.h"
-#include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/os_crypt/sync/key_storage_config_linux.h"
 #include "components/os_crypt/sync/key_storage_util_linux.h"
 #include "components/os_crypt/sync/os_crypt.h"
+#include "components/password_manager/core/browser/password_manager_switches.h"  // nogncheck
 #include "content/browser/browser_main_loop.h"  // nogncheck
 #include "content/public/browser/browser_child_process_host_delegate.h"
 #include "content/public/browser/browser_child_process_host_iterator.h"
@@ -34,6 +33,7 @@
 #include "content/public/browser/child_process_data.h"
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/device_service.h"
+#include "content/public/browser/download_manager.h"
 #include "content/public/browser/first_party_sets_handler.h"
 #include "content/public/browser/web_ui_controller_factory.h"
 #include "content/public/common/content_features.h"
@@ -41,12 +41,10 @@
 #include "content/public/common/process_type.h"
 #include "content/public/common/result_codes.h"
 #include "electron/buildflags/buildflags.h"
-#include "electron/fuses.h"
 #include "media/base/localized_strings.h"
 #include "services/network/public/cpp/features.h"
 #include "services/tracing/public/cpp/stack_sampling/tracing_sampler_profiler.h"
 #include "shell/app/electron_main_delegate.h"
-#include "shell/browser/api/electron_api_app.h"
 #include "shell/browser/api/electron_api_utility_process.h"
 #include "shell/browser/browser.h"
 #include "shell/browser/browser_process_impl.h"
@@ -64,15 +62,16 @@
 #include "shell/common/logging.h"
 #include "shell/common/node_bindings.h"
 #include "shell/common/node_includes.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/idle/idle.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/color/color_provider_manager.h"
+#include "ui/display/screen.h"
+#include "ui/linux/display_server_utils.h"
+#include "ui/views/layout/layout_provider.h"
+#include "url/url_util.h"
 
 #if defined(USE_AURA)
-#include "ui/display/display.h"
-#include "ui/display/screen.h"
 #include "ui/views/widget/desktop_aura/desktop_screen.h"
 #include "ui/wm/core/wm_state.h"
 #endif
@@ -81,6 +80,7 @@
 #include "base/environment.h"
 #include "chrome/browser/ui/views/dark_mode_manager_linux.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
+#include "device/bluetooth/dbus/bluez_dbus_manager.h"
 #include "device/bluetooth/dbus/dbus_bluez_manager_wrapper_linux.h"
 #include "electron/electron_gtk_stubs.h"
 #include "ui/base/cursor/cursor_factory.h"
@@ -94,13 +94,14 @@
 #endif
 
 #if BUILDFLAG(IS_WIN)
+#include "chrome/browser/win/chrome_select_file_dialog_factory.h"
 #include "ui/base/l10n/l10n_util_win.h"
 #include "ui/gfx/system_fonts_win.h"
 #include "ui/strings/grit/app_locale_settings.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
-#include "components/os_crypt/sync/keychain_password_mac.h"
+#include "components/os_crypt/common/keychain_password_mac.h"
 #include "shell/browser/ui/cocoa/views_delegate_mac.h"
 #else
 #include "shell/browser/ui/views/electron_views_delegate.h"
@@ -133,6 +134,8 @@ class LinuxUiGetterImpl : public ui::LinuxUiGetter {
  public:
   LinuxUiGetterImpl() = default;
   ~LinuxUiGetterImpl() override = default;
+
+  // ui::LinuxUiGetter
   ui::LinuxUiTheme* GetForWindow(aura::Window* window) override {
     return GetForProfile(nullptr);
   }
@@ -141,11 +144,6 @@ class LinuxUiGetterImpl : public ui::LinuxUiGetter {
   }
 };
 #endif
-
-template <typename T>
-void Erase(T* container, typename T::iterator iter) {
-  container->erase(iter);
-}
 
 #if BUILDFLAG(IS_WIN)
 int GetMinimumFontSize() {
@@ -165,7 +163,7 @@ std::u16string MediaStringProvider(media::MessageId id) {
       return u"Communications";
 #endif
     default:
-      return std::u16string();
+      return {};
   }
 }
 
@@ -207,14 +205,17 @@ int ElectronBrowserMainParts::GetExitCode() const {
 }
 
 int ElectronBrowserMainParts::PreEarlyInitialization() {
-  field_trial_list_ = std::make_unique<base::FieldTrialList>();
 #if BUILDFLAG(IS_POSIX)
   HandleSIGCHLD();
 #endif
+#if BUILDFLAG(IS_OZONE)
+  // Initialize Ozone platform and add required feature flags as per platform's
+  // properties.
 #if BUILDFLAG(IS_LINUX)
-  DetectOzonePlatform();
-  ui::OzonePlatform::PreEarlyInitialization();
+  ui::SetOzonePlatformForLinuxIfNeeded(*base::CommandLine::ForCurrentProcess());
 #endif
+  ui::OzonePlatform::PreEarlyInitialization();
+#endif  // BUILDFLAG(IS_OZONE)
 #if BUILDFLAG(IS_MAC)
   screen_ = std::make_unique<display::ScopedNativeScreen>();
 #endif
@@ -234,12 +235,14 @@ void ElectronBrowserMainParts::PostEarlyInitialization() {
   // avoid conflicts we only initialize our V8 environment after that.
   js_env_ = std::make_unique<JavascriptEnvironment>(node_bindings_->uv_loop());
 
-  v8::HandleScope scope(js_env_->isolate());
+  v8::Isolate* const isolate = js_env_->isolate();
+  v8::HandleScope scope(isolate);
 
-  node_bindings_->Initialize(js_env_->isolate()->GetCurrentContext());
+  node_bindings_->Initialize(isolate, isolate->GetCurrentContext());
   // Create the global environment.
   node_env_ = node_bindings_->CreateEnvironment(
-      js_env_->isolate()->GetCurrentContext(), js_env_->platform());
+      isolate, isolate->GetCurrentContext(), js_env_->platform(),
+      js_env_->max_young_generation_size_in_bytes());
 
   node_env_->set_trace_sync_io(node_env_->options()->trace_sync_io);
 
@@ -247,7 +250,7 @@ void ElectronBrowserMainParts::PostEarlyInitialization() {
   node_env_->options()->unhandled_rejections = "warn-with-error-code";
 
   // Add Electron extended APIs.
-  electron_bindings_->BindTo(js_env_->isolate(), node_env_->process_object());
+  electron_bindings_->BindTo(isolate, node_env_->process_object());
 
   // Create explicit microtasks runner.
   js_env_->CreateMicrotasksRunner();
@@ -307,12 +310,10 @@ int ElectronBrowserMainParts::PreCreateThreads() {
   // We must set this env first to make ui::ResourceBundle accept the custom
   // locale.
   auto env = base::Environment::Create();
-  absl::optional<std::string> lc_all;
+  std::optional<std::string> lc_all;
   if (!locale.empty()) {
-    std::string str;
-    if (env->GetVar("LC_ALL", &str))
-      lc_all.emplace(std::move(str));
-    env->SetVar("LC_ALL", locale.c_str());
+    lc_all = env->GetVar("LC_ALL");
+    env->SetVar("LC_ALL", locale);
   }
 #endif
 
@@ -322,7 +323,7 @@ int ElectronBrowserMainParts::PreCreateThreads() {
 #if defined(USE_AURA)
   // NB: must be called _after_ locale resource bundle is loaded,
   // because ui lib makes use of it in X11
-  if (!display::Screen::GetScreen()) {
+  if (!display::Screen::Get()) {
     screen_ = views::CreateDesktopScreen();
   }
 #endif
@@ -341,9 +342,6 @@ int ElectronBrowserMainParts::PreCreateThreads() {
       env->UnSetVar("LC_ALL");
   }
 #endif
-
-  // Force MediaCaptureDevicesDispatcher to be created on UI thread.
-  MediaCaptureDevicesDispatcher::GetInstance();
 
   // Force MediaCaptureDevicesDispatcher to be created on UI thread.
   MediaCaptureDevicesDispatcher::GetInstance();
@@ -372,10 +370,9 @@ void ElectronBrowserMainParts::PostCreateThreads() {
   // Separate the WebPluginInfo registration for these processes.
   std::vector<content::WebPluginInfo> plugins;
   auto* plugin_service = content::PluginService::GetInstance();
-  plugin_service->RefreshPlugins();
   GetInternalPlugins(&plugins);
   for (const auto& plugin : plugins)
-    plugin_service->RegisterInternalPlugin(plugin, true);
+    plugin_service->RegisterInternalPlugin(plugin);
 #endif
 }
 
@@ -396,12 +393,6 @@ void ElectronBrowserMainParts::ToolkitInitialized() {
   auto* linux_ui = ui::GetDefaultLinuxUi();
   CHECK(linux_ui);
   linux_ui_getter_ = std::make_unique<LinuxUiGetterImpl>();
-
-  // Try loading gtk symbols used by Electron.
-  electron::InitializeElectron_gtk(gtk::GetLibGtk());
-  if (!electron::IsElectron_gtkInitialized()) {
-    electron::UninitializeElectron_gtk();
-  }
 
   electron::InitializeElectron_gdk_pixbuf(gtk::GetLibGdkPixbuf());
   CHECK(electron::IsElectron_gdk_pixbufInitialized())
@@ -450,6 +441,7 @@ int ElectronBrowserMainParts::PreMainMessageLoopRun() {
   // BrowserContextKeyedAPIServiceFactories require an ExtensionsBrowserClient.
   extensions_browser_client_ =
       std::make_unique<ElectronExtensionsBrowserClient>();
+  extensions_browser_client_->Init();
   extensions::ExtensionsBrowserClient::Set(extensions_browser_client_.get());
 
   extensions::EnsureBrowserContextKeyedServiceFactoriesBuilt();
@@ -477,16 +469,21 @@ int ElectronBrowserMainParts::PreMainMessageLoopRun() {
     DevToolsManagerDelegate::StartHttpHandler();
   }
 
+  fake_browser_process_->PreMainMessageLoopRun();
+
 #if !BUILDFLAG(IS_MAC)
   // The corresponding call in macOS is in ElectronApplicationDelegate.
   Browser::Get()->WillFinishLaunching();
-  Browser::Get()->DidFinishLaunching(base::Value::Dict());
+  Browser::Get()->DidFinishLaunching(base::DictValue());
 #endif
 
   // Notify observers that main thread message loop was initialized.
   Browser::Get()->PreMainMessageLoopRun();
 
-  fake_browser_process_->PreMainMessageLoopRun();
+#if BUILDFLAG(IS_WIN)
+  ui::SelectFileDialog::SetFactory(
+      std::make_unique<ChromeSelectFileDialogFactory>());
+#endif
 
   return GetExitCode();
 }
@@ -504,11 +501,13 @@ void ElectronBrowserMainParts::PostCreateMainMessageLoop() {
 #endif
 #if BUILDFLAG(IS_LINUX)
   auto shutdown_cb =
-      base::BindOnce(base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
+      base::BindOnce([] { LOG(FATAL) << "Failed to shutdown."; });
   ui::OzonePlatform::GetInstance()->PostCreateMainMessageLoop(
       std::move(shutdown_cb),
       content::GetUIThreadTaskRunner({content::BrowserTaskType::kUserInput}));
-  bluez::DBusBluezManagerWrapperLinux::Initialize();
+
+  if (!bluez::BluezDBusManager::IsInitialized())
+    bluez::DBusBluezManagerWrapperLinux::Initialize();
 
   // Set up crypt config. This needs to be done before anything starts the
   // network service, as the raw encryption key needs to be shared with the
@@ -518,13 +517,14 @@ void ElectronBrowserMainParts::PostCreateMainMessageLoop() {
   std::unique_ptr<os_crypt::Config> config =
       std::make_unique<os_crypt::Config>();
   // Forward to os_crypt the flag to use a specific password store.
-  config->store = command_line.GetSwitchValueASCII(::switches::kPasswordStore);
+  config->store =
+      command_line.GetSwitchValueASCII(password_manager::kPasswordStore);
   config->product_name = app_name;
   config->application_name = app_name;
   // c.f.
   // https://source.chromium.org/chromium/chromium/src/+/main:chrome/common/chrome_switches.cc;l=689;drc=9d82515060b9b75fa941986f5db7390299669ef1
   config->should_use_preference =
-      command_line.HasSwitch(::switches::kEnableEncryptionSelection);
+      command_line.HasSwitch(password_manager::kEnableEncryptionSelection);
   base::PathService::Get(DIR_SESSION_DATA, &config->user_data_path);
 
   bool use_backend = !config->should_use_preference ||
@@ -556,11 +556,9 @@ void ElectronBrowserMainParts::PostMainMessageLoopRun() {
 
   // Shutdown the DownloadManager before destroying Node to prevent
   // DownloadItem callbacks from crashing.
-  for (auto& iter : ElectronBrowserContext::browser_context_map()) {
-    auto* download_manager = iter.second.get()->GetDownloadManager();
-    if (download_manager) {
+  for (auto* browser_context : ElectronBrowserContext::BrowserContexts()) {
+    if (auto* download_manager = browser_context->GetDownloadManager())
       download_manager->Shutdown();
-    }
   }
 
   // Shutdown utility process created with Electron API before
@@ -597,13 +595,10 @@ void ElectronBrowserMainParts::PostMainMessageLoopRun() {
   node_env_->set_trace_sync_io(false);
   js_env_->DestroyMicrotasksRunner();
   node::Stop(node_env_.get(), node::StopFlags::kDoNotTerminateIsolate);
+  node_bindings_->set_uv_env(nullptr);
   node_env_.reset();
 
-  auto default_context_key = ElectronBrowserContext::PartitionKey("", false);
-  std::unique_ptr<ElectronBrowserContext> default_context = std::move(
-      ElectronBrowserContext::browser_context_map()[default_context_key]);
-  ElectronBrowserContext::browser_context_map().clear();
-  default_context.reset();
+  ElectronBrowserContext::DestroyAllContexts();
 
   fake_browser_process_->PostMainMessageLoopRun();
   content::DevToolsAgentHost::StopRemoteDebuggingPipeHandler();

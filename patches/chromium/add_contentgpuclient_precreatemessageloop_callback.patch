@@ -10,12 +10,12 @@ Allows Electron to restore WER when ELECTRON_DEFAULT_ERROR_MODE is set.
 This should be upstreamed.
 
 diff --git a/content/gpu/gpu_main.cc b/content/gpu/gpu_main.cc
-index 3f18e426a88127090a6f62a08a5e09185f704c35..a04b115c45a24936a5418af179d6e35312c6fd31 100644
+index b9fbc9e5b1d57e0ed842b08f0e3709d2bcf25aa5..bee847f2c72ae6856eb40d6e7e4afa6927965ea8 100644
 --- a/content/gpu/gpu_main.cc
 +++ b/content/gpu/gpu_main.cc
-@@ -264,6 +264,10 @@ int GpuMain(MainFunctionParams parameters) {
+@@ -272,6 +272,10 @@ int GpuMain(MainFunctionParams parameters) {
    // to the GpuProcessHost once the GpuServiceImpl has started.
-   viz::GpuServiceImpl::InstallPreInitializeLogHandler();
+   viz::GpuLogMessageManager::GetInstance()->InstallPreInitializeLogHandler();
  
 +  auto* client = GetContentClient()->gpu();
 +  if (client)
@@ -24,8 +24,8 @@ index 3f18e426a88127090a6f62a08a5e09185f704c35..a04b115c45a24936a5418af179d6e353
    // We are experiencing what appear to be memory-stomp issues in the GPU
    // process. These issues seem to be impacting the task executor and listeners
    // registered to it. Create the task executor on the heap to guard against
-@@ -360,7 +364,6 @@ int GpuMain(MainFunctionParams parameters) {
-       const_cast<base::CommandLine*>(&command_line), gpu_preferences);
+@@ -380,7 +384,6 @@ int GpuMain(MainFunctionParams parameters) {
+ #endif
    const bool dead_on_arrival = !init_success;
  
 -  auto* client = GetContentClient()->gpu();
@@ -33,10 +33,10 @@ index 3f18e426a88127090a6f62a08a5e09185f704c35..a04b115c45a24936a5418af179d6e353
      client->PostSandboxInitialized();
    }
 diff --git a/content/public/gpu/content_gpu_client.h b/content/public/gpu/content_gpu_client.h
-index 3020e59f491f95740983b01c16e2a5be01d60f67..b25140275ce636717ca60a3cb17eb2f35f50d8be 100644
+index e5389b44df98ab1a5c976524a66a26c763e5c436..4a183b4959fae18e6875440e6570b8ada6823d81 100644
 --- a/content/public/gpu/content_gpu_client.h
 +++ b/content/public/gpu/content_gpu_client.h
-@@ -30,6 +30,10 @@ class CONTENT_EXPORT ContentGpuClient {
+@@ -36,6 +36,10 @@ class CONTENT_EXPORT ContentGpuClient {
   public:
    virtual ~ContentGpuClient() {}
  

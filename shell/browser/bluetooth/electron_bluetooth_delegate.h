@@ -6,14 +6,13 @@
 #define ELECTRON_SHELL_BROWSER_BLUETOOTH_ELECTRON_BLUETOOTH_DELEGATE_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
-#include "base/scoped_observation.h"
+#include "base/values.h"
 #include "content/public/browser/bluetooth_delegate.h"
-#include "content/public/browser/render_frame_host.h"
 #include "third_party/blink/public/mojom/bluetooth/web_bluetooth.mojom-forward.h"
 
 namespace blink {
@@ -57,7 +56,7 @@ class ElectronBluetoothDelegate : public content::BluetoothDelegate {
                             const std::u16string& device_identifier,
                             PairPromptCallback callback,
                             PairingKind pairing_kind,
-                            const absl::optional<std::u16string>& pin) override;
+                            const std::optional<std::u16string>& pin) override;
   blink::WebBluetoothDeviceId GetWebBluetoothDeviceId(
       content::RenderFrameHost* frame,
       const std::string& device_address) override;
@@ -77,6 +76,7 @@ class ElectronBluetoothDelegate : public content::BluetoothDelegate {
   void RevokeDevicePermissionWebInitiated(
       content::RenderFrameHost* frame,
       const blink::WebBluetoothDeviceId& device_id) override;
+  bool MayUseBluetooth(content::RenderFrameHost* frame) override;
   bool IsAllowedToAccessService(content::RenderFrameHost* frame,
                                 const blink::WebBluetoothDeviceId& device_id,
                                 const device::BluetoothUUID& service) override;
@@ -95,7 +95,7 @@ class ElectronBluetoothDelegate : public content::BluetoothDelegate {
 
  private:
   void OnDevicePairPromptResponse(PairPromptCallback callback,
-                                  base::Value::Dict response);
+                                  base::DictValue response);
 
   base::WeakPtrFactory<ElectronBluetoothDelegate> weak_factory_{this};
 };

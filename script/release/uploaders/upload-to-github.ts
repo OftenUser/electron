@@ -1,12 +1,9 @@
 import { Octokit } from '@octokit/rest';
+
 import * as fs from 'node:fs';
 
-const octokit = new Octokit({
-  auth: process.env.ELECTRON_GITHUB_TOKEN,
-  log: console
-});
-
-if (!process.env.CI) require('dotenv-safe').load();
+import { createGitHubTokenStrategy } from '../github-token';
+import { ELECTRON_ORG, ELECTRON_REPO, ElectronReleaseRepo, NIGHTLY_REPO } from '../types';
 
 if (process.argv.length < 6) {
   console.log('Usage: upload-to-github filePath fileName releaseId');
@@ -27,7 +24,9 @@ const getHeaders = (filePath: string, fileName: string) => {
   if (!extension) {
     throw new Error(`Failed to get headers for extensionless file: ${fileName}`);
   }
+  console.log(`About to get size of ${filePath}`);
   const size = fs.statSync(filePath).size;
+  console.log(`Got size of ${filePath}: ${size}`);
   const options: Record<string, string> = {
     json: 'text/json',
     zip: 'application/zip',
@@ -41,17 +40,29 @@ const getHeaders = (filePath: string, fileName: string) => {
   };
 };
 
-const targetRepo = releaseVersion.indexOf('nightly') > 0 ? 'nightlies' : 'electron';
+function getRepo (): ElectronReleaseRepo {
+  return releaseVersion.indexOf('nightly') > 0 ? NIGHTLY_REPO : ELECTRON_REPO;
+}
+
+const targetRepo = getRepo();
 const uploadUrl = `https://uploads.github.com/repos/electron/${targetRepo}/releases/${releaseId}/assets{?name,label}`;
 let retry = 0;
 
+let octokit = new Octokit({
+  authStrategy: createGitHubTokenStrategy(targetRepo),
+  log: console
+});
+
 function uploadToGitHub () {
+  console.log(`in uploadToGitHub for ${filePath}, ${fileName}`);
+  const fileData = fs.createReadStream(filePath);
+  console.log(`in uploadToGitHub, created readstream for ${filePath}`);
   octokit.repos.uploadReleaseAsset({
     url: uploadUrl,
     headers: getHeaders(filePath, fileName),
-    data: fs.createReadStream(filePath) as any,
+    data: fileData as any,
     name: fileName,
-    owner: 'electron',
+    owner: ELECTRON_ORG,
     repo: targetRepo,
     release_id: releaseId
   }).then(() => {
@@ -62,8 +73,14 @@ function uploadToGitHub () {
       console.log(`Error uploading ${fileName} to GitHub, will retry.  Error was:`, err);
       retry++;
 
+      // Reset octokit in case it cached an auth error somehow
+      octokit = new Octokit({
+        authStrategy: createGitHubTokenStrategy(targetRepo),
+        log: console
+      });
+
       octokit.repos.listReleaseAssets({
-        owner: 'electron',
+        owner: ELECTRON_ORG,
         repo: targetRepo,
         release_id: releaseId,
         per_page: 100
@@ -75,7 +92,7 @@ function uploadToGitHub () {
         if (existingAssets.length > 0) {
           console.log(`${fileName} already exists; will delete before retrying upload.`);
           octokit.repos.deleteReleaseAsset({
-            owner: 'electron',
+            owner: ELECTRON_ORG,
             repo: targetRepo,
             asset_id: existingAssets[0].id
           }).catch((deleteErr) => {
@@ -87,6 +104,7 @@ function uploadToGitHub () {
         }
       }).catch((getReleaseErr) => {
         console.log('Fatal: Unable to get current release assets via getRelease!  Error was:', getReleaseErr);
+        process.exitCode = 1;
       });
     } else {
       console.log(`Error retrying uploading ${fileName} to GitHub:`, err);

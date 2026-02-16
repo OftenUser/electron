@@ -4,6 +4,7 @@
 
 #include "shell/browser/serial/serial_chooser_context_factory.h"
 
+#include "base/no_destructor.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "shell/browser/electron_browser_context.h"
 #include "shell/browser/serial/serial_chooser_context.h"
@@ -17,16 +18,17 @@ SerialChooserContextFactory::SerialChooserContextFactory()
 
 SerialChooserContextFactory::~SerialChooserContextFactory() = default;
 
-KeyedService* SerialChooserContextFactory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+SerialChooserContextFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
-  auto* browser_context =
-      static_cast<electron::ElectronBrowserContext*>(context);
-  return new SerialChooserContext(browser_context);
+  return std::make_unique<SerialChooserContext>(
+      static_cast<electron::ElectronBrowserContext*>(context));
 }
 
 // static
 SerialChooserContextFactory* SerialChooserContextFactory::GetInstance() {
-  return base::Singleton<SerialChooserContextFactory>::get();
+  static base::NoDestructor<SerialChooserContextFactory> instance;
+  return instance.get();
 }
 
 // static

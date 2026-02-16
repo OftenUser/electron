@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/fixed_flat_map.h"
@@ -20,13 +21,14 @@
 #include "shell/common/gin_converters/value_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/keyboard_util.h"
-#include "shell/common/v8_value_serializer.h"
+#include "shell/common/v8_util.h"
 #include "third_party/blink/public/common/context_menu_data/edit_flags.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "third_party/blink/public/common/widget/device_emulation_params.h"
+#include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/events/blink/blink_event_util.h"
@@ -50,7 +52,7 @@ namespace gin {
 template <>
 struct Converter<char16_t> {
   static bool FromV8(v8::Isolate* isolate,
-                     v8::Handle<v8::Value> val,
+                     v8::Local<v8::Value> val,
                      char16_t* out) {
     std::u16string code = base::UTF8ToUTF16(gin::V8ToString(isolate, val));
     if (code.length() != 1)
@@ -73,6 +75,8 @@ struct Converter<char16_t> {
   CASE_TYPE(kKeyDown, "keyDown")                             \
   CASE_TYPE(kKeyUp, "keyUp")                                 \
   CASE_TYPE(kChar, "char")                                   \
+  CASE_TYPE(kGestureBegin, "gestureBegin")                   \
+  CASE_TYPE(kGestureEnd, "gestureEnd")                       \
   CASE_TYPE(kGestureScrollBegin, "gestureScrollBegin")       \
   CASE_TYPE(kGestureScrollEnd, "gestureScrollEnd")           \
   CASE_TYPE(kGestureScrollUpdate, "gestureScrollUpdate")     \
@@ -105,7 +109,7 @@ struct Converter<char16_t> {
 
 bool Converter<blink::WebInputEvent::Type>::FromV8(
     v8::Isolate* isolate,
-    v8::Handle<v8::Value> val,
+    v8::Local<v8::Value> val,
     blink::WebInputEvent::Type* out) {
   std::string type = gin::V8ToString(isolate, val);
 #define CASE_TYPE(event_type, js_name)                   \
@@ -131,16 +135,36 @@ v8::Local<v8::Value> Converter<blink::WebInputEvent::Type>::ToV8(
 template <>
 struct Converter<blink::WebMouseEvent::Button> {
   static bool FromV8(v8::Isolate* isolate,
-                     v8::Handle<v8::Value> val,
+                     v8::Local<v8::Value> val,
                      blink::WebMouseEvent::Button* out) {
     using Val = blink::WebMouseEvent::Button;
     static constexpr auto Lookup =
-        base::MakeFixedFlatMap<base::StringPiece, Val>({
+        base::MakeFixedFlatMap<std::string_view, Val>({
             {"left", Val::kLeft},
             {"middle", Val::kMiddle},
             {"right", Val::kRight},
         });
     return FromV8WithLowerLookup(isolate, val, Lookup, out);
+  }
+  static v8::Local<v8::Value> ToV8(v8::Isolate* isolate,
+                                   const blink::WebMouseEvent::Button& in) {
+    switch (in) {
+      case blink::WebMouseEvent::Button::kLeft:
+        return StringToV8(isolate, "left");
+      case blink::WebMouseEvent::Button::kMiddle:
+        return StringToV8(isolate, "middle");
+      case blink::WebMouseEvent::Button::kRight:
+        return StringToV8(isolate, "right");
+      case blink::WebMouseEvent::Button::kNoButton:
+        return StringToV8(isolate, "none");
+      case blink::WebMouseEvent::Button::kBack:
+        return StringToV8(isolate, "back");
+      case blink::WebMouseEvent::Button::kForward:
+        return StringToV8(isolate, "forward");
+      case blink::WebMouseEvent::Button::kEraser:
+        return StringToV8(isolate, "eraser");
+    }
+    return v8::Null(isolate);
   }
 };
 
@@ -148,7 +172,7 @@ struct Converter<blink::WebMouseEvent::Button> {
 
 // these are the modifier names we both accept and return
 static constexpr auto Modifiers =
-    base::MakeFixedFlatMap<base::StringPiece, blink::WebInputEvent::Modifiers>({
+    base::MakeFixedFlatMap<std::string_view, blink::WebInputEvent::Modifiers>({
         {"alt", blink::WebInputEvent::Modifiers::kAltKey},
         {"capslock", blink::WebInputEvent::Modifiers::kCapsLockOn},
         {"control", blink::WebInputEvent::Modifiers::kControlKey},
@@ -167,14 +191,14 @@ static constexpr auto Modifiers =
 
 // these are the modifier names we accept but do not return
 static constexpr auto ModifierAliases =
-    base::MakeFixedFlatMap<base::StringPiece, blink::WebInputEvent::Modifiers>({
+    base::MakeFixedFlatMap<std::string_view, blink::WebInputEvent::Modifiers>({
         {"cmd", blink::WebInputEvent::Modifiers::kMetaKey},
         {"command", blink::WebInputEvent::Modifiers::kMetaKey},
         {"ctrl", blink::WebInputEvent::Modifiers::kControlKey},
 });
 
 static constexpr auto ReferrerPolicies =
-    base::MakeFixedFlatMap<base::StringPiece, network::mojom::ReferrerPolicy>({
+    base::MakeFixedFlatMap<std::string_view, network::mojom::ReferrerPolicy>({
         {"default", network::mojom::ReferrerPolicy::kDefault},
         {"no-referrer", network::mojom::ReferrerPolicy::kNever},
         {"no-referrer-when-downgrade", network::mojom::ReferrerPolicy::kNoReferrerWhenDowngrade},
@@ -190,15 +214,17 @@ static constexpr auto ReferrerPolicies =
 template <>
 struct Converter<blink::WebInputEvent::Modifiers> {
   static bool FromV8(v8::Isolate* isolate,
-                     v8::Handle<v8::Value> val,
+                     v8::Local<v8::Value> val,
                      blink::WebInputEvent::Modifiers* out) {
     return FromV8WithLowerLookup(isolate, val, Modifiers, out) ||
            FromV8WithLowerLookup(isolate, val, ModifierAliases, out);
   }
 };
 
-std::vector<base::StringPiece> ModifiersToArray(int modifiers) {
-  std::vector<base::StringPiece> modifier_strings;
+namespace {
+
+std::vector<std::string_view> ModifiersToArray(int modifiers) {
+  std::vector<std::string_view> modifier_strings;
 
   for (const auto& [name, mask] : Modifiers)
     if (mask & modifiers)
@@ -206,6 +232,8 @@ std::vector<base::StringPiece> ModifiersToArray(int modifiers) {
 
   return modifier_strings;
 }
+
+}  // namespace
 
 blink::WebInputEvent::Type GetWebInputEventType(v8::Isolate* isolate,
                                                 v8::Local<v8::Value> val) {
@@ -238,6 +266,9 @@ v8::Local<v8::Value> Converter<blink::WebInputEvent>::ToV8(
   if (blink::WebInputEvent::IsKeyboardEventType(in.GetType()))
     return gin::ConvertToV8(isolate,
                             *static_cast<const blink::WebKeyboardEvent*>(&in));
+  else if (blink::WebInputEvent::IsMouseEventType(in.GetType()))
+    return gin::ConvertToV8(isolate,
+                            *static_cast<const blink::WebMouseEvent*>(&in));
   return gin::DataObjectBuilder(isolate)
       .Set("type", in.GetType())
       .Set("modifiers", ModifiersToArray(in.GetModifiers()))
@@ -258,7 +289,7 @@ bool Converter<blink::WebKeyboardEvent>::FromV8(v8::Isolate* isolate,
   if (!dict.Get("keyCode", &str))
     return false;
 
-  absl::optional<char16_t> shifted_char;
+  std::optional<char16_t> shifted_char;
   ui::KeyboardCode keyCode = electron::KeyboardCodeFromStr(str, &shifted_char);
   out->windows_key_code = keyCode;
   if (shifted_char)
@@ -284,19 +315,20 @@ bool Converter<blink::WebKeyboardEvent>::FromV8(v8::Isolate* isolate,
 
     // Make sure to not read beyond the buffer in case some bad code doesn't
     // NULL-terminate it (this is called from plugins).
-    size_t text_length_cap = blink::WebKeyboardEvent::kTextLengthCap;
     std::u16string text16 = character_str.empty()
                                 ? base::UTF8ToUTF16(str)
                                 : base::UTF8ToUTF16(character_str);
-    std::fill_n(out->text, text_length_cap, 0);
-    std::fill_n(out->unmodified_text, text_length_cap, 0);
-    for (size_t i = 0; i < std::min(text_length_cap - 1, text16.size()); ++i) {
+    std::ranges::fill(out->text, 0);
+    std::ranges::fill(out->unmodified_text, 0);
+    for (size_t i = 0; i < std::min(out->text.size() - 1, text16.size()); ++i) {
       out->text[i] = text16[i];
       out->unmodified_text[i] = text16[i];
     }
   }
   return true;
 }
+
+namespace {
 
 int GetKeyLocationCode(const blink::WebInputEvent& key) {
   // https://source.chromium.org/chromium/chromium/src/+/main:third_party/blink/renderer/core/events/keyboard_event.h;l=46;drc=1ff6437e65b183e673b7b4f25060b74dc2ba5c37
@@ -315,6 +347,8 @@ int GetKeyLocationCode(const blink::WebInputEvent& key) {
     return kDomKeyLocationRight;
   return kDomKeyLocationStandard;
 }
+
+}  // namespace
 
 v8::Local<v8::Value> Converter<blink::WebKeyboardEvent>::ToV8(
     v8::Isolate* isolate,
@@ -358,16 +392,36 @@ bool Converter<blink::WebMouseEvent>::FromV8(v8::Isolate* isolate,
   if (!dict.Get("button", &out->button))
     out->button = blink::WebMouseEvent::Button::kLeft;
 
-  float global_x = 0.f;
-  float global_y = 0.f;
-  dict.Get("globalX", &global_x);
-  dict.Get("globalY", &global_y);
+  const float global_x = dict.ValueOrDefault("globalX", 0.F);
+  const float global_y = dict.ValueOrDefault("globalY", 0.F);
   out->SetPositionInScreen(global_x, global_y);
 
   dict.Get("movementX", &out->movement_x);
   dict.Get("movementY", &out->movement_y);
   dict.Get("clickCount", &out->click_count);
   return true;
+}
+
+v8::Local<v8::Value> Converter<blink::WebMouseEvent>::ToV8(
+    v8::Isolate* isolate,
+    const blink::WebMouseEvent& in) {
+  auto dict = gin_helper::Dictionary::CreateEmpty(isolate);
+
+  dict.Set("type", in.GetType());
+  dict.Set("clickCount", in.ClickCount());
+  dict.Set("movementX", in.movement_x);
+  dict.Set("movementY", in.movement_y);
+  dict.Set("button", in.button);
+
+  gfx::PointF position_in_screen = in.PositionInScreen();
+  dict.Set("globalX", position_in_screen.x());
+  dict.Set("globalY", position_in_screen.y());
+
+  gfx::PointF position_in_widget = in.PositionInWidget();
+  dict.Set("x", position_in_widget.x());
+  dict.Set("y", position_in_widget.y());
+
+  return dict.GetHandle();
 }
 
 bool Converter<blink::WebMouseWheelEvent>::FromV8(
@@ -386,23 +440,19 @@ bool Converter<blink::WebMouseWheelEvent>::FromV8(
   dict.Get("accelerationRatioX", &out->acceleration_ratio_x);
   dict.Get("accelerationRatioY", &out->acceleration_ratio_y);
 
-  bool has_precise_scrolling_deltas = false;
-  dict.Get("hasPreciseScrollingDeltas", &has_precise_scrolling_deltas);
-  if (has_precise_scrolling_deltas) {
-    out->delta_units = ui::ScrollGranularity::kScrollByPrecisePixel;
-  } else {
-    out->delta_units = ui::ScrollGranularity::kScrollByPixel;
-  }
+  const bool precise = dict.ValueOrDefault("hasPreciseScrollingDeltas", false);
+  out->delta_units = precise ? ui::ScrollGranularity::kScrollByPrecisePixel
+                             : ui::ScrollGranularity::kScrollByPixel;
 
 #if defined(USE_AURA)
   // Matches the behavior of ui/events/blink/web_input_event_traits.cc:
-  bool can_scroll = true;
-  if (dict.Get("canScroll", &can_scroll) && !can_scroll) {
+  if (!dict.ValueOrDefault("canScroll", true)) {
     out->delta_units = ui::ScrollGranularity::kScrollByPage;
     out->SetModifiers(out->GetModifiers() &
                       ~blink::WebInputEvent::Modifiers::kControlKey);
   }
 #endif
+
   return true;
 }
 
@@ -460,20 +510,20 @@ v8::Local<v8::Value> Converter<blink::mojom::ContextMenuDataMediaType>::ToV8(
 
 // static
 v8::Local<v8::Value>
-Converter<absl::optional<blink::mojom::FormControlType>>::ToV8(
+Converter<std::optional<blink::mojom::FormControlType>>::ToV8(
     v8::Isolate* isolate,
-    const absl::optional<blink::mojom::FormControlType>& in) {
-  base::StringPiece str{"none"};
+    const std::optional<blink::mojom::FormControlType>& in) {
+  std::string_view str{"none"};
   if (in.has_value()) {
     switch (*in) {
       case blink::mojom::FormControlType::kButtonButton:
         str = "button-button";
         break;
+      case blink::mojom::FormControlType::kButtonPopover:
+        str = "popover-button";
+        break;
       case blink::mojom::FormControlType::kButtonReset:
         str = "reset-button";
-        break;
-      case blink::mojom::FormControlType::kButtonSelectList:
-        str = "select-list";
         break;
       case blink::mojom::FormControlType::kButtonSubmit:
         str = "submit-button";
@@ -549,9 +599,6 @@ Converter<absl::optional<blink::mojom::FormControlType>>::ToV8(
         break;
       case blink::mojom::FormControlType::kOutput:
         str = "output";
-        break;
-      case blink::mojom::FormControlType::kSelectList:
-        str = "select-list";
         break;
       case blink::mojom::FormControlType::kSelectMultiple:
         str = "select-multiple";
@@ -656,7 +703,7 @@ v8::Local<v8::Value> Converter<network::mojom::ReferrerPolicy>::ToV8(
 // static
 bool Converter<network::mojom::ReferrerPolicy>::FromV8(
     v8::Isolate* isolate,
-    v8::Handle<v8::Value> val,
+    v8::Local<v8::Value> val,
     network::mojom::ReferrerPolicy* out) {
   return FromV8WithLowerLookup(isolate, val, ReferrerPolicies, out);
 }
@@ -695,9 +742,23 @@ v8::Local<v8::Value> Converter<blink::CloneableMessage>::ToV8(
 }
 
 bool Converter<blink::CloneableMessage>::FromV8(v8::Isolate* isolate,
-                                                v8::Handle<v8::Value> val,
+                                                v8::Local<v8::Value> val,
                                                 blink::CloneableMessage* out) {
   return electron::SerializeV8Value(isolate, val, out);
+}
+
+// static
+v8::Local<v8::Value> Converter<blink::mojom::ConsoleMessageLevel>::ToV8(
+    v8::Isolate* isolate,
+    const blink::mojom::ConsoleMessageLevel& in) {
+  using Val = blink::mojom::ConsoleMessageLevel;
+  static constexpr auto Lookup = base::MakeFixedFlatMap<Val, std::string_view>({
+      {Val::kVerbose, "debug"},
+      {Val::kInfo, "info"},
+      {Val::kWarning, "warning"},
+      {Val::kError, "error"},
+  });
+  return StringToV8(isolate, Lookup.at(in));
 }
 
 }  // namespace gin

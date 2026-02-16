@@ -6,51 +6,41 @@ Subject: fix: lazyload fs in esm loaders to apply asar patches
 Changes { foo } from fs to just "fs.foo" so that our patching of fs is applied to esm loaders
 
 diff --git a/lib/internal/modules/esm/load.js b/lib/internal/modules/esm/load.js
-index f108b567a910805ff86f0baf75fa1a6102ad28d6..8406e8ca319533d6186c5d457e951b7a845b6b72 100644
+index 5f1921d15bc1d3a68c35990f85e36a0e8a5b3ec4..99c6ce57c04768d125dd0a1c6bd62bca7aae27bc 100644
 --- a/lib/internal/modules/esm/load.js
 +++ b/lib/internal/modules/esm/load.js
-@@ -10,7 +10,7 @@ const { kEmptyObject } = require('internal/util');
+@@ -9,7 +9,7 @@ const {
+ 
  const { defaultGetFormat } = require('internal/modules/esm/get_format');
  const { validateAttributes, emitImportAssertionWarning } = require('internal/modules/esm/assert');
- const { getOptionValue } = require('internal/options');
 -const { readFileSync } = require('fs');
 +const fs = require('fs');
  
- // Do not eagerly grab .manifest, it may be in TDZ
- const policy = getOptionValue('--experimental-policy') ?
-@@ -40,8 +40,7 @@ async function getSource(url, context) {
-   let responseURL = href;
-   let source;
-   if (protocol === 'file:') {
--    const { readFile: readFileAsync } = require('internal/fs/promises').exports;
--    source = await readFileAsync(url);
-+    source = await fs.promises.readFile(url);
-   } else if (protocol === 'data:') {
-     const match = RegExpPrototypeExec(DATA_URL_PATTERN, url.pathname);
-     if (!match) {
-@@ -80,7 +79,7 @@ function getSourceSync(url, context) {
+ const { Buffer: { from: BufferFrom } } = require('buffer');
+ 
+@@ -34,7 +34,7 @@ function getSourceSync(url, context) {
    const responseURL = href;
    let source;
    if (protocol === 'file:') {
 -    source = readFileSync(url);
 +    source = fs.readFileSync(url);
    } else if (protocol === 'data:') {
-     const match = RegExpPrototypeExec(DATA_URL_PATTERN, url.pathname);
-     if (!match) {
+     const result = dataURLProcessor(url);
+     if (result === 'failure') {
 diff --git a/lib/internal/modules/esm/resolve.js b/lib/internal/modules/esm/resolve.js
-index 2d077cc182b40e0bdce2d71d0471e96e6d30222a..34fd6613fa24d628fc026ac11e5be7217a20fff4 100644
+index 4fd58b1cea557ec122bd860e1ebc15bd04c44f78..8dc8bbfe8d73e2d11edc261d6fe9f37aaa81e4cd 100644
 --- a/lib/internal/modules/esm/resolve.js
 +++ b/lib/internal/modules/esm/resolve.js
-@@ -24,7 +24,7 @@ const {
- } = primordials;
+@@ -25,7 +25,7 @@ const {
+ const assert = require('internal/assert');
  const internalFS = require('internal/fs/utils');
  const { BuiltinModule } = require('internal/bootstrap/realm');
 -const { realpathSync } = require('fs');
 +const fs = require('fs');
  const { getOptionValue } = require('internal/options');
  // Do not eagerly grab .manifest, it may be in TDZ
- const policy = getOptionValue('--experimental-policy') ?
-@@ -257,7 +257,7 @@ function finalizeResolution(resolved, base, preserveSymlinks) {
+ const { sep, posix: { relative: relativePosixPath }, resolve } = require('path');
+@@ -277,7 +277,7 @@ function finalizeResolution(resolved, base, preserveSymlinks) {
    }
  
    if (!preserveSymlinks) {
@@ -60,33 +50,24 @@ index 2d077cc182b40e0bdce2d71d0471e96e6d30222a..34fd6613fa24d628fc026ac11e5be721
      });
      const { search, hash } = resolved;
 diff --git a/lib/internal/modules/esm/translators.js b/lib/internal/modules/esm/translators.js
-index bda102b266b17936efc453d039213517c4ef921c..dbbe37474c70addfbf8cf805c29732dcd38c74f6 100644
+index 30f887663bbbd9913eff35f0e6e5b8291adda120..e4d5579565eea07013c8260fa3c4aa3b266a4b35 100644
 --- a/lib/internal/modules/esm/translators.js
 +++ b/lib/internal/modules/esm/translators.js
-@@ -32,7 +32,7 @@ function lazyTypes() {
+@@ -24,7 +24,7 @@ const {
  
- const { containsModuleSyntax } = internalBinding('contextify');
+ const { BuiltinModule } = require('internal/bootstrap/realm');
  const assert = require('internal/assert');
 -const { readFileSync } = require('fs');
 +const fs = require('fs');
- const { dirname, extname, isAbsolute } = require('path');
+ const { dirname, extname } = require('path');
  const {
-   loadBuiltinModule,
-@@ -355,7 +355,7 @@ translators.set('commonjs', async function commonjsStrategy(url, source,
+   assertBufferSource,
+@@ -365,7 +365,7 @@ translators.set('commonjs', function commonjsStrategy(url, translateContext, par
  
    try {
      // We still need to read the FS to detect the exports.
--    source ??= readFileSync(new URL(url), 'utf8');
-+    source ??= fs.readFileSync(new URL(url), 'utf8');
+-    translateContext.source ??= readFileSync(new URL(url), 'utf8');
++    translateContext.source ??= fs.readFileSync(new URL(url), 'utf8');
    } catch {
      // Continue regardless of error.
    }
-@@ -424,7 +424,7 @@ function cjsPreparseModuleExports(filename, source) {
-       isAbsolute(resolved)) {
-         // TODO: this should be calling the `load` hook chain to get the source
-         // (and fallback to reading the FS only if the source is nullish).
--        const source = readFileSync(resolved, 'utf-8');
-+        const source = fs.readFileSync(resolved, 'utf-8');
-         const { exportNames: reexportNames } = cjsPreparseModuleExports(resolved, source);
-         for (const name of reexportNames) {
-           exportNames.add(name);

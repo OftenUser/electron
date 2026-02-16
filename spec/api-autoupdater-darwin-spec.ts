@@ -1,15 +1,20 @@
-import { expect } from 'chai';
-import * as cp from 'node:child_process';
-import * as http from 'node:http';
-import * as express from 'express';
-import * as fs from 'fs-extra';
-import * as path from 'node:path';
-import * as psList from 'ps-list';
-import { AddressInfo } from 'node:net';
-import { ifdescribe, ifit } from './lib/spec-helpers';
-import { copyApp, getCodesignIdentity, shouldRunCodesignTests, signApp, spawn, withTempDirectory } from './lib/codesign-helpers';
-import * as uuid from 'uuid';
 import { autoUpdater, systemPreferences } from 'electron';
+
+import { expect } from 'chai';
+import * as express from 'express';
+import * as psList from 'ps-list';
+import * as uuid from 'uuid';
+
+import * as cp from 'node:child_process';
+import * as fs from 'node:fs';
+import * as http from 'node:http';
+import { AddressInfo } from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import { copyMacOSFixtureApp, getCodesignIdentity, shouldRunCodesignTests, signApp, spawn } from './lib/codesign-helpers';
+import { withTempDirectory } from './lib/fs-helpers';
+import { ifdescribe, ifit } from './lib/spec-helpers';
 
 // We can only test the auto updater on darwin non-component builds
 ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
@@ -38,6 +43,16 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
     return cp.spawn(path.resolve(appPath, 'Contents/MacOS/Electron'), args);
   };
 
+  const launchAppSandboxed = (appPath: string, profilePath: string, args: string[] = []) => {
+    return spawn('/usr/bin/sandbox-exec', [
+      '-f',
+      profilePath,
+      path.resolve(appPath, 'Contents/MacOS/Electron'),
+      ...args,
+      '--no-sandbox'
+    ]);
+  };
+
   const getRunningShipIts = async (appPath: string) => {
     const processes = await psList();
     const activeShipIts = processes.filter(p => p.cmd?.includes('Squirrel.framework/Resources/ShipIt com.github.Electron.ShipIt') && p.cmd!.startsWith(appPath));
@@ -53,6 +68,38 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
     }
   };
 
+  // Squirrel stores update directories in ~/Library/Caches/com.github.Electron.ShipIt/
+  // as subdirectories named like update.XXXXXXX
+  const getSquirrelCacheDirectory = () => {
+    return path.join(os.homedir(), 'Library', 'Caches', 'com.github.Electron.ShipIt');
+  };
+
+  const getUpdateDirectoriesInCache = async () => {
+    const cacheDir = getSquirrelCacheDirectory();
+    try {
+      const entries = await fs.promises.readdir(cacheDir, { withFileTypes: true });
+      return entries
+        .filter(entry => entry.isDirectory() && entry.name.startsWith('update.'))
+        .map(entry => path.join(cacheDir, entry.name));
+    } catch {
+      return [];
+    }
+  };
+
+  const cleanSquirrelCache = async () => {
+    const cacheDir = getSquirrelCacheDirectory();
+    try {
+      const entries = await fs.promises.readdir(cacheDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && entry.name.startsWith('update.')) {
+          await fs.promises.rm(path.join(cacheDir, entry.name), { recursive: true, force: true });
+        }
+      }
+    } catch {
+      // Cache dir may not exist yet
+    }
+  };
+
   const cachedZips: Record<string, string> = {};
 
   type Mutation = {
@@ -65,16 +112,16 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
     if (!cachedZips[key]) {
       let updateZipPath: string;
       await withTempDirectory(async (dir) => {
-        const secondAppPath = await copyApp(dir, fixture);
+        const secondAppPath = await copyMacOSFixtureApp(dir, fixture);
         const appPJPath = path.resolve(secondAppPath, 'Contents', 'Resources', 'app', 'package.json');
-        await fs.writeFile(
+        await fs.promises.writeFile(
           appPJPath,
-          (await fs.readFile(appPJPath, 'utf8')).replace('1.0.0', version)
+          (await fs.promises.readFile(appPJPath, 'utf8')).replace('1.0.0', version)
         );
         const infoPath = path.resolve(secondAppPath, 'Contents', 'Info.plist');
-        await fs.writeFile(
+        await fs.promises.writeFile(
           infoPath,
-          (await fs.readFile(infoPath, 'utf8')).replace(/(<key>CFBundleShortVersionString<\/key>\s+<string>)[^<]+/g, `$1${version}`)
+          (await fs.promises.readFile(infoPath, 'utf8')).replace(/(<key>CFBundleShortVersionString<\/key>\s+<string>)[^<]+/g, `$1${version}`)
         );
         await mutateAppPreSign?.mutate(secondAppPath);
         await signApp(secondAppPath, identity);
@@ -98,7 +145,7 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
   // On arm64 builds the built app is self-signed by default so the setFeedURL call always works
   ifit(process.arch !== 'arm64')('should fail to set the feed URL when the app is not signed', async () => {
     await withTempDirectory(async (dir) => {
-      const appPath = await copyApp(dir);
+      const appPath = await copyMacOSFixtureApp(dir);
       const launchResult = await launchApp(appPath, ['http://myupdate']);
       console.log(launchResult);
       expect(launchResult.code).to.equal(1);
@@ -108,7 +155,7 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
 
   it('should cleanly set the feed URL when the app is signed', async () => {
     await withTempDirectory(async (dir) => {
-      const appPath = await copyApp(dir);
+      const appPath = await copyMacOSFixtureApp(dir);
       await signApp(appPath, identity);
       const launchResult = await launchApp(appPath, ['http://myupdate']);
       expect(launchResult.code).to.equal(0);
@@ -149,7 +196,7 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
 
     it('should hit the update endpoint when checkForUpdates is called', async () => {
       await withTempDirectory(async (dir) => {
-        const appPath = await copyApp(dir, 'check');
+        const appPath = await copyMacOSFixtureApp(dir, 'check');
         await signApp(appPath, identity);
         server.get('/update-check', (req, res) => {
           res.status(204).send();
@@ -166,7 +213,7 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
 
     it('should hit the update endpoint with customer headers when checkForUpdates is called', async () => {
       await withTempDirectory(async (dir) => {
-        const appPath = await copyApp(dir, 'check-with-headers');
+        const appPath = await copyMacOSFixtureApp(dir, 'check-with-headers');
         await signApp(appPath, identity);
         server.get('/update-check', (req, res) => {
           res.status(204).send();
@@ -183,7 +230,7 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
 
     it('should hit the download endpoint when an update is available and error if the file is bad', async () => {
       await withTempDirectory(async (dir) => {
-        const appPath = await copyApp(dir, 'update');
+        const appPath = await copyMacOSFixtureApp(dir, 'update');
         await signApp(appPath, identity);
         server.get('/update-file', (req, res) => {
           res.status(500).send('This is not a file');
@@ -217,12 +264,12 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
       mutateAppPostSign?: Mutation;
     }, fn: (appPath: string, zipPath: string) => Promise<void>) => {
       await withTempDirectory(async (dir) => {
-        const appPath = await copyApp(dir, opts.startFixture);
+        const appPath = await copyMacOSFixtureApp(dir, opts.startFixture);
         await opts.mutateAppPreSign?.mutate(appPath);
         const infoPath = path.resolve(appPath, 'Contents', 'Info.plist');
-        await fs.writeFile(
+        await fs.promises.writeFile(
           infoPath,
-          (await fs.readFile(infoPath, 'utf8')).replace(/(<key>CFBundleShortVersionString<\/key>\s+<string>)[^<]+/g, '$11.0.0')
+          (await fs.promises.readFile(infoPath, 'utf8')).replace(/(<key>CFBundleShortVersionString<\/key>\s+<string>)[^<]+/g, '$11.0.0')
         );
         await signApp(appPath, identity);
 
@@ -326,6 +373,67 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
       });
     });
 
+    it('should clean up old staged update directories when a new update is downloaded', async () => {
+      // Clean up any existing update directories before the test
+      await cleanSquirrelCache();
+
+      await withUpdatableApp({
+        nextVersion: '2.0.0',
+        startFixture: 'update-stack',
+        endFixture: 'update-stack'
+      }, async (appPath, updateZipPath2) => {
+        await withUpdatableApp({
+          nextVersion: '3.0.0',
+          startFixture: 'update-stack',
+          endFixture: 'update-stack'
+        }, async (_, updateZipPath3) => {
+          let updateCount = 0;
+          let downloadCount = 0;
+          let directoriesDuringSecondDownload: string[] = [];
+
+          server.get('/update-file', async (req, res) => {
+            downloadCount++;
+            // When the second download request arrives, Squirrel has already
+            // called uniqueTemporaryDirectoryForUpdate which (with our patch)
+            // cleans up old directories before creating the new one.
+            // Without the patch, both directories would exist at this point.
+            if (downloadCount === 2) {
+              directoriesDuringSecondDownload = await getUpdateDirectoriesInCache();
+            }
+            res.download(updateCount > 1 ? updateZipPath3 : updateZipPath2);
+          });
+          server.get('/update-check', (req, res) => {
+            updateCount++;
+            res.json({
+              url: `http://localhost:${port}/update-file`,
+              name: 'My Release Name',
+              notes: 'Theses are some release notes innit',
+              pub_date: (new Date()).toString()
+            });
+          });
+          const relaunchPromise = new Promise<void>((resolve) => {
+            server.get('/update-check/updated/:version', (req, res) => {
+              res.status(204).send();
+              resolve();
+            });
+          });
+          const launchResult = await launchApp(appPath, [`http://localhost:${port}/update-check`]);
+          logOnError(launchResult, () => {
+            expect(launchResult).to.have.property('code', 0);
+            expect(launchResult.out).to.include('Update Downloaded');
+          });
+
+          await relaunchPromise;
+
+          // During the second download, the old staged update directory should
+          // have been cleaned up. With our patch, there should be exactly 1
+          // directory (the new one). Without the patch, there would be 2.
+          expect(directoriesDuringSecondDownload).to.have.lengthOf(1,
+            `Expected 1 update directory during second download but found ${directoriesDuringSecondDownload.length}: ${directoriesDuringSecondDownload.join(', ')}`);
+        });
+      });
+    });
+
     it('should update to lower version numbers', async () => {
       await withUpdatableApp({
         nextVersion: '0.0.1',
@@ -377,9 +485,9 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
             mutationKey: 'prevent-downgrades',
             mutate: async (appPath) => {
               const infoPath = path.resolve(appPath, 'Contents', 'Info.plist');
-              await fs.writeFile(
+              await fs.promises.writeFile(
                 infoPath,
-                (await fs.readFile(infoPath, 'utf8')).replace('<key>NSSupportsAutomaticGraphicsSwitching</key>', '<key>ElectronSquirrelPreventDowngrades</key><true/><key>NSSupportsAutomaticGraphicsSwitching</key>')
+                (await fs.promises.readFile(infoPath, 'utf8')).replace('<key>NSSupportsAutomaticGraphicsSwitching</key>', '<key>ElectronSquirrelPreventDowngrades</key><true/><key>NSSupportsAutomaticGraphicsSwitching</key>')
               );
             }
           }
@@ -417,9 +525,9 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
             mutationKey: 'prevent-downgrades',
             mutate: async (appPath) => {
               const infoPath = path.resolve(appPath, 'Contents', 'Info.plist');
-              await fs.writeFile(
+              await fs.promises.writeFile(
                 infoPath,
-                (await fs.readFile(infoPath, 'utf8')).replace('<key>NSSupportsAutomaticGraphicsSwitching</key>', '<key>ElectronSquirrelPreventDowngrades</key><true/><key>NSSupportsAutomaticGraphicsSwitching</key>')
+                (await fs.promises.readFile(infoPath, 'utf8')).replace('<key>NSSupportsAutomaticGraphicsSwitching</key>', '<key>ElectronSquirrelPreventDowngrades</key><true/><key>NSSupportsAutomaticGraphicsSwitching</key>')
               );
             }
           }
@@ -557,7 +665,7 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
 
         await shipItFlipFlopPromise;
         expect(requests).to.have.lengthOf(2, 'should not have relaunched the updated app');
-        expect(JSON.parse(await fs.readFile(path.resolve(appPath, 'Contents/Resources/app/package.json'), 'utf8')).version).to.equal('1.0.0', 'should still be the old version on disk');
+        expect(JSON.parse(await fs.promises.readFile(path.resolve(appPath, 'Contents/Resources/app/package.json'), 'utf8')).version).to.equal('1.0.0', 'should still be the old version on disk');
 
         retainerHandle.kill('SIGINT');
       });
@@ -630,7 +738,7 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
           mutationKey: 'add-resource',
           mutate: async (appPath) => {
             const resourcesPath = path.resolve(appPath, 'Contents', 'Resources', 'app', 'injected.txt');
-            await fs.writeFile(resourcesPath, 'demo');
+            await fs.promises.writeFile(resourcesPath, 'demo');
           }
         }
       }, async (appPath, updateZipPath) => {
@@ -668,8 +776,8 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
           mutationKey: 'modify-shipit',
           mutate: async (appPath) => {
             const shipItPath = path.resolve(appPath, 'Contents', 'Frameworks', 'Squirrel.framework', 'Resources', 'ShipIt');
-            await fs.remove(shipItPath);
-            await fs.symlink('/tmp/ShipIt', shipItPath, 'file');
+            await fs.promises.rm(shipItPath, { force: true, recursive: true });
+            await fs.promises.symlink('/tmp/ShipIt', shipItPath, 'file');
           }
         }
       }, async (appPath, updateZipPath) => {
@@ -707,7 +815,7 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
           mutationKey: 'modify-eframework',
           mutate: async (appPath) => {
             const shipItPath = path.resolve(appPath, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Electron Framework');
-            await fs.appendFile(shipItPath, Buffer.from('123'));
+            await fs.promises.appendFile(shipItPath, Buffer.from('123'));
           }
         }
       }, async (appPath, updateZipPath) => {
@@ -727,6 +835,41 @@ ifdescribe(shouldRunCodesignTests)('autoUpdater behavior', function () {
           expect(launchResult).to.have.property('code', 1);
           expect(launchResult.out).to.include('Code signature at URL');
           expect(launchResult.out).to.include(' main executable failed strict validation');
+          expect(requests).to.have.lengthOf(2);
+          expect(requests[0]).to.have.property('url', '/update-check');
+          expect(requests[1]).to.have.property('url', '/update-file');
+          expect(requests[0].header('user-agent')).to.include('Electron/');
+          expect(requests[1].header('user-agent')).to.include('Electron/');
+        });
+      });
+    });
+
+    it('should hit the download endpoint when an update is available and fail when the zip extraction process fails to launch', async () => {
+      await withUpdatableApp({
+        nextVersion: '2.0.0',
+        startFixture: 'update',
+        endFixture: 'update'
+      }, async (appPath, updateZipPath) => {
+        server.get('/update-file', (req, res) => {
+          res.download(updateZipPath);
+        });
+        server.get('/update-check', (req, res) => {
+          res.json({
+            url: `http://localhost:${port}/update-file`,
+            name: 'My Release Name',
+            notes: 'Theses are some release notes innit',
+            pub_date: (new Date()).toString()
+          });
+        });
+        const launchResult = await launchAppSandboxed(
+          appPath,
+          path.resolve(__dirname, 'fixtures/auto-update/sandbox/block-ditto.sb'),
+          [`http://localhost:${port}/update-check`]
+        );
+        logOnError(launchResult, () => {
+          expect(launchResult).to.have.property('code', 1);
+          expect(launchResult.out).to.include('Starting ditto task failed with error:');
+          expect(launchResult.out).to.include('SQRLZipArchiverErrorDomain');
           expect(requests).to.have.lengthOf(2);
           expect(requests[0]).to.have.property('url', '/update-check');
           expect(requests[1]).to.have.property('url', '/update-file');

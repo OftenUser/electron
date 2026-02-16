@@ -7,7 +7,8 @@
 #include <utility>
 #include <vector>
 
-#include "base/memory/raw_ptr.h"
+#include "base/containers/flat_map.h"
+#include "base/containers/map_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
@@ -16,7 +17,9 @@
 #include "mojo/public/cpp/system/simple_watcher.h"
 #include "net/base/net_errors.h"
 #include "shell/common/gin_helper/promise.h"
-#include "shell/common/key_weak_map.h"
+#include "shell/common/node_util.h"
+#include "v8/include/cppgc/allocation.h"
+#include "v8/include/v8-cppgc.h"
 
 #include "shell/common/node_includes.h"
 
@@ -28,9 +31,11 @@ namespace {
 int g_next_id = 0;
 
 // Map that manages all the DataPipeHolder objects.
-KeyWeakMap<std::string>& AllDataPipeHolders() {
-  static base::NoDestructor<KeyWeakMap<std::string>> weak_map;
-  return *weak_map.get();
+[[nodiscard]] auto& AllDataPipeHolders() {
+  static base::NoDestructor<
+      base::flat_map<std::string, cppgc::WeakPersistent<DataPipeHolder>>>
+      weak_map;
+  return *weak_map;
 }
 
 // Utility class to read from data pipe.
@@ -69,7 +74,7 @@ class DataPipeReader {
       return;
     }
     buffer_.resize(size);
-    head_ = &buffer_.front();
+    head_offset_ = 0;
     remaining_size_ = size;
     handle_watcher_.ArmOrNotify();
   }
@@ -83,11 +88,14 @@ class DataPipeReader {
     }
 
     // Read.
-    uint32_t length = remaining_size_;
-    result = data_pipe_->ReadData(head_, &length, MOJO_READ_DATA_FLAG_NONE);
+    size_t length = remaining_size_;
+    result = data_pipe_->ReadData(
+        MOJO_READ_DATA_FLAG_NONE,
+        base::as_writable_byte_span(buffer_).subspan(head_offset_, length),
+        length);
     if (result == MOJO_RESULT_OK) {  // success
       remaining_size_ -= length;
-      head_ += length;
+      head_offset_ += length;
       if (remaining_size_ == 0) {
         OnSuccess();
       } else {
@@ -111,8 +119,7 @@ class DataPipeReader {
     // inside the sandbox
     v8::HandleScope handle_scope(promise_.isolate());
     v8::Local<v8::Value> buffer =
-        node::Buffer::Copy(promise_.isolate(), &buffer_.front(), buffer_.size())
-            .ToLocalChecked();
+        electron::Buffer::Copy(promise_.isolate(), buffer_).ToLocalChecked();
     promise_.Resolve(buffer);
 
     // Destroy data pipe.
@@ -130,7 +137,7 @@ class DataPipeReader {
   std::vector<char> buffer_;
 
   // The head of buffer.
-  raw_ptr<char, AllowPtrArithmetic> head_ = nullptr;
+  size_t head_offset_ = 0;
 
   // Remaining data to read.
   uint64_t remaining_size_ = 0;
@@ -140,7 +147,9 @@ class DataPipeReader {
 
 }  // namespace
 
-gin::WrapperInfo DataPipeHolder::kWrapperInfo = {gin::kEmbedderNativeGin};
+const gin::WrapperInfo DataPipeHolder::kWrapperInfo = {
+    {gin::kEmbedderNativeGin},
+    gin::kElectronDataPipeHolder};
 
 DataPipeHolder::DataPipeHolder(const network::DataElement& element)
     : id_(base::NumberToString(++g_next_id)) {
@@ -162,26 +171,28 @@ v8::Local<v8::Promise> DataPipeHolder::ReadAll(v8::Isolate* isolate) {
   return handle;
 }
 
-// static
-gin::Handle<DataPipeHolder> DataPipeHolder::Create(
-    v8::Isolate* isolate,
-    const network::DataElement& element) {
-  auto handle = gin::CreateHandle(isolate, new DataPipeHolder(element));
-  AllDataPipeHolders().Set(isolate, handle->id(),
-                           handle->GetWrapper(isolate).ToLocalChecked());
-  return handle;
+const gin::WrapperInfo* DataPipeHolder::wrapper_info() const {
+  return &kWrapperInfo;
+}
+
+const char* DataPipeHolder::GetHumanReadableName() const {
+  return "Electron / DataPipeHolder";
 }
 
 // static
-gin::Handle<DataPipeHolder> DataPipeHolder::From(v8::Isolate* isolate,
-                                                 const std::string& id) {
-  v8::MaybeLocal<v8::Object> object = AllDataPipeHolders().Get(isolate, id);
-  if (!object.IsEmpty()) {
-    gin::Handle<DataPipeHolder> handle;
-    if (gin::ConvertFromV8(isolate, object.ToLocalChecked(), &handle))
-      return handle;
-  }
-  return gin::Handle<DataPipeHolder>();
+DataPipeHolder* DataPipeHolder::Create(v8::Isolate* isolate,
+                                       const network::DataElement& element) {
+  auto* holder = cppgc::MakeGarbageCollected<DataPipeHolder>(
+      isolate->GetCppHeap()->GetAllocationHandle(), element);
+  AllDataPipeHolders().insert_or_assign(holder->id(), holder);
+  return holder;
+}
+
+// static
+DataPipeHolder* DataPipeHolder::From(v8::Isolate* isolate,
+                                     const std::string_view id) {
+  auto* found = base::FindOrNull(AllDataPipeHolders(), id);
+  return found ? found->Get() : nullptr;
 }
 
 }  // namespace electron::api

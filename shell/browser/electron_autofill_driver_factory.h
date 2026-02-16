@@ -6,19 +6,19 @@
 #define ELECTRON_SHELL_BROWSER_ELECTRON_AUTOFILL_DRIVER_FACTORY_H_
 
 #include <memory>
-#include <unordered_map>
 
 #include "base/functional/callback_forward.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "shell/common/api/api.mojom.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace electron {
 
 class AutofillDriver;
 
 class AutofillDriverFactory
-    : public content::WebContentsObserver,
+    : private content::WebContentsObserver,
       public content::WebContentsUserData<AutofillDriverFactory> {
  public:
   typedef base::OnceCallback<std::unique_ptr<AutofillDriver>()>
@@ -31,11 +31,6 @@ class AutofillDriverFactory
           pending_receiver,
       content::RenderFrameHost* render_frame_host);
 
-  // content::WebContentsObserver:
-  void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
-  void DidFinishNavigation(
-      content::NavigationHandle* navigation_handle) override;
-
   AutofillDriver* DriverForFrame(content::RenderFrameHost* render_frame_host);
   void AddDriverForFrame(content::RenderFrameHost* render_frame_host,
                          CreationCallback factory_method);
@@ -46,10 +41,16 @@ class AutofillDriverFactory
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 
  private:
+  // content::WebContentsObserver:
+  void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override;
+
   explicit AutofillDriverFactory(content::WebContents* web_contents);
   friend class content::WebContentsUserData<AutofillDriverFactory>;
 
-  std::unordered_map<content::RenderFrameHost*, std::unique_ptr<AutofillDriver>>
+  absl::flat_hash_map<content::RenderFrameHost*,
+                      std::unique_ptr<AutofillDriver>>
       driver_map_;
 };
 

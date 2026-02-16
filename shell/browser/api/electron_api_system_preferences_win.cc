@@ -2,10 +2,11 @@
 // Use of this source code is governed by the MIT license that can be
 // found in the LICENSE file.
 
-#include <dwmapi.h>
+#include <iomanip>
+#include <string_view>
+
 #include <windows.devices.enumeration.h>
 #include <wrl/client.h>
-#include <iomanip>
 
 #include "shell/browser/api/electron_api_system_preferences.h"
 
@@ -14,9 +15,10 @@
 #include "base/win/windows_types.h"
 #include "base/win/wrapped_window_proc.h"
 #include "shell/common/color_util.h"
-#include "ui/base/win/shell.h"
-#include "ui/gfx/color_utils.h"
+#include "shell/common/process_util.h"
+#include "skia/ext/skia_utils_win.h"
 #include "ui/gfx/win/hwnd_util.h"
+#include "ui/gfx/win/singleton_hwnd.h"
 
 namespace electron {
 
@@ -74,10 +76,6 @@ std::string ConvertDeviceAccessStatus(DeviceAccessStatus value) {
 
 namespace api {
 
-bool SystemPreferences::IsAeroGlassEnabled() {
-  return true;
-}
-
 std::string hexColorDWORDToRGBA(DWORD color) {
   DWORD rgba = color << 8 | color >> 24;
   std::ostringstream stream;
@@ -86,54 +84,51 @@ std::string hexColorDWORDToRGBA(DWORD color) {
 }
 
 std::string SystemPreferences::GetAccentColor() {
-  DWORD color = 0;
-  BOOL opaque = FALSE;
+  std::optional<DWORD> color = GetSystemAccentColor();
 
-  if (FAILED(DwmGetColorizationColor(&color, &opaque))) {
+  if (!color.has_value())
     return "";
-  }
 
-  return hexColorDWORDToRGBA(color);
+  return ToRGBAHex(skia::COLORREFToSkColor(color.value()), false);
 }
 
 std::string SystemPreferences::GetColor(gin_helper::ErrorThrower thrower,
                                         const std::string& color) {
-  static constexpr auto Lookup =
-      base::MakeFixedFlatMap<base::StringPiece, int>({
-          {"3d-dark-shadow", COLOR_3DDKSHADOW},
-          {"3d-face", COLOR_3DFACE},
-          {"3d-highlight", COLOR_3DHIGHLIGHT},
-          {"3d-light", COLOR_3DLIGHT},
-          {"3d-shadow", COLOR_3DSHADOW},
-          {"active-border", COLOR_ACTIVEBORDER},
-          {"active-caption", COLOR_ACTIVECAPTION},
-          {"active-caption-gradient", COLOR_GRADIENTACTIVECAPTION},
-          {"app-workspace", COLOR_APPWORKSPACE},
-          {"button-text", COLOR_BTNTEXT},
-          {"caption-text", COLOR_CAPTIONTEXT},
-          {"desktop", COLOR_DESKTOP},
-          {"disabled-text", COLOR_GRAYTEXT},
-          {"highlight", COLOR_HIGHLIGHT},
-          {"highlight-text", COLOR_HIGHLIGHTTEXT},
-          {"hotlight", COLOR_HOTLIGHT},
-          {"inactive-border", COLOR_INACTIVEBORDER},
-          {"inactive-caption", COLOR_INACTIVECAPTION},
-          {"inactive-caption-gradient", COLOR_GRADIENTINACTIVECAPTION},
-          {"inactive-caption-text", COLOR_INACTIVECAPTIONTEXT},
-          {"info-background", COLOR_INFOBK},
-          {"info-text", COLOR_INFOTEXT},
-          {"menu", COLOR_MENU},
-          {"menu-highlight", COLOR_MENUHILIGHT},
-          {"menu-text", COLOR_MENUTEXT},
-          {"menubar", COLOR_MENUBAR},
-          {"scrollbar", COLOR_SCROLLBAR},
-          {"window", COLOR_WINDOW},
-          {"window-frame", COLOR_WINDOWFRAME},
-          {"window-text", COLOR_WINDOWTEXT},
-      });
+  static constexpr auto Lookup = base::MakeFixedFlatMap<std::string_view, int>({
+      {"3d-dark-shadow", COLOR_3DDKSHADOW},
+      {"3d-face", COLOR_3DFACE},
+      {"3d-highlight", COLOR_3DHIGHLIGHT},
+      {"3d-light", COLOR_3DLIGHT},
+      {"3d-shadow", COLOR_3DSHADOW},
+      {"active-border", COLOR_ACTIVEBORDER},
+      {"active-caption", COLOR_ACTIVECAPTION},
+      {"active-caption-gradient", COLOR_GRADIENTACTIVECAPTION},
+      {"app-workspace", COLOR_APPWORKSPACE},
+      {"button-text", COLOR_BTNTEXT},
+      {"caption-text", COLOR_CAPTIONTEXT},
+      {"desktop", COLOR_DESKTOP},
+      {"disabled-text", COLOR_GRAYTEXT},
+      {"highlight", COLOR_HIGHLIGHT},
+      {"highlight-text", COLOR_HIGHLIGHTTEXT},
+      {"hotlight", COLOR_HOTLIGHT},
+      {"inactive-border", COLOR_INACTIVEBORDER},
+      {"inactive-caption", COLOR_INACTIVECAPTION},
+      {"inactive-caption-gradient", COLOR_GRADIENTINACTIVECAPTION},
+      {"inactive-caption-text", COLOR_INACTIVECAPTIONTEXT},
+      {"info-background", COLOR_INFOBK},
+      {"info-text", COLOR_INFOTEXT},
+      {"menu", COLOR_MENU},
+      {"menu-highlight", COLOR_MENUHILIGHT},
+      {"menu-text", COLOR_MENUTEXT},
+      {"menubar", COLOR_MENUBAR},
+      {"scrollbar", COLOR_SCROLLBAR},
+      {"window", COLOR_WINDOW},
+      {"window-frame", COLOR_WINDOWFRAME},
+      {"window-text", COLOR_WINDOWTEXT},
+  });
 
-  if (const auto* iter = Lookup.find(color); iter != Lookup.end())
-    return ToRGBAHex(color_utils::GetSysSkColor(iter->second));
+  if (auto iter = Lookup.find(color); iter != Lookup.end())
+    return ToRGBAHex(GetSysSkColor(iter->second));
 
   thrower.ThrowError("Unknown color: " + color);
   return "";
@@ -153,17 +148,20 @@ std::string SystemPreferences::GetMediaAccessStatus(
         DeviceAccessStatus::DeviceAccessStatus_Allowed);
   } else {
     thrower.ThrowError("Invalid media type");
-    return std::string();
+    return {};
   }
 }
 
 void SystemPreferences::InitializeWindow() {
+  if (electron::IsUtilityProcess())
+    return;
   // Wait until app is ready before creating sys color listener
   // Creating this listener before the app is ready causes global shortcuts
   // to not fire
   if (Browser::Get()->is_ready())
-    color_change_listener_ =
-        std::make_unique<gfx::ScopedSysColorChangeListener>(this);
+    hwnd_subscription_ =
+        gfx::SingletonHwnd::GetInstance()->RegisterCallback(base::BindRepeating(
+            &SystemPreferences::OnWndProc, base::Unretained(this)));
   else
     Browser::Get()->AddObserver(this);
 
@@ -212,13 +210,21 @@ LRESULT CALLBACK SystemPreferences::WndProc(HWND hwnd,
   return ::DefWindowProc(hwnd, message, wparam, lparam);
 }
 
-void SystemPreferences::OnSysColorChange() {
+void SystemPreferences::OnWndProc(HWND hwnd,
+                                  UINT message,
+                                  WPARAM wparam,
+                                  LPARAM lparam) {
+  if (message != WM_SYSCOLORCHANGE &&
+      (message != WM_SETTINGCHANGE || wparam != SPI_SETHIGHCONTRAST)) {
+    return;
+  }
   Emit("color-changed");
 }
 
-void SystemPreferences::OnFinishLaunching(base::Value::Dict launch_info) {
-  color_change_listener_ =
-      std::make_unique<gfx::ScopedSysColorChangeListener>(this);
+void SystemPreferences::OnFinishLaunching(base::DictValue launch_info) {
+  hwnd_subscription_ =
+      gfx::SingletonHwnd::GetInstance()->RegisterCallback(base::BindRepeating(
+          &SystemPreferences::OnWndProc, base::Unretained(this)));
 }
 
 }  // namespace api

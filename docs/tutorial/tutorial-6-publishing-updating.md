@@ -32,7 +32,7 @@ at [https://update.electronjs.org](https://update.electronjs.org). Its requireme
 - Your app runs on macOS or Windows
 - Your app has a public GitHub repository
 - Builds are published to [GitHub releases][]
-- Builds are [code signed][code-signed]
+- Builds are [code signed][code-signed] **(macOS only)**
 
 At this point, we'll assume that you have already pushed all your
 code to a public GitHub repository.
@@ -152,7 +152,7 @@ command that can handle the version bumping and tagging for you.
 #### Bonus: Publishing in GitHub Actions
 
 Publishing locally can be painful, especially because you can only create distributables
-for your host operating system (i.e. you can't publish a Window `.exe` file from macOS).
+for your host operating system (i.e. you can't publish a Windows `.exe` file from macOS).
 
 A solution for this would be to publish your app via automation workflows
 such as [GitHub Actions][], which can run tasks in the
@@ -222,8 +222,8 @@ rest of our docs and happy developing! If you have questions, please stop by our
 [code-signed]: ./code-signing.md
 [discord server]: https://discord.gg/electronjs
 [electron fiddle]: https://www.electronjs.org/fiddle
-[fiddle-build]: https://github.com/electron/fiddle/blob/main/.github/workflows/build.yaml
-[fiddle-forge-config]: https://github.com/electron/fiddle/blob/main/forge.config.js
+[fiddle-build]: https://github.com/electron/fiddle/blob/main/.circleci/config.yml
+[fiddle-forge-config]: https://github.com/electron/fiddle/blob/main/forge.config.ts
 [github actions]: https://github.com/features/actions
 [github publisher]: https://www.electronforge.io/config/publishers/github
 [github releases]: https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository

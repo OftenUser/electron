@@ -15,66 +15,23 @@
 #include "base/apple/osstatus_logging.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/functional/callback.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/mac/scoped_aedesc.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
-#include "net/base/mac/url_conversions.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/task/thread_pool.h"
+#include "content/public/browser/browser_task_traits.h"
+#include "electron/mas.h"
+#include "net/base/apple/url_conversions.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 namespace {
 
-// This may be called from a global dispatch queue, the methods used here are
-// thread safe, including LSGetApplicationForURL (> 10.2) and
-// NSWorkspace#openURLs.
-std::string OpenURL(NSURL* ns_url, bool activate) {
-  CFURLRef cf_url = (__bridge CFURLRef)(ns_url);
-  CFURLRef ref =
-      LSCopyDefaultApplicationURLForURL(cf_url, kLSRolesAll, nullptr);
-
-  // If no application could be found, nullptr is returned and outError
-  // (if not nullptr) is populated with kLSApplicationNotFoundErr.
-  if (ref == nullptr)
-    return "No application in the Launch Services database matches the input "
-           "criteria.";
-
-  NSUInteger launchOptions = NSWorkspaceLaunchDefault;
-  if (!activate)
-    launchOptions |= NSWorkspaceLaunchWithoutActivation;
-
-  bool opened = [[NSWorkspace sharedWorkspace] openURLs:@[ ns_url ]
-                                withAppBundleIdentifier:nil
-                                                options:launchOptions
-                         additionalEventParamDescriptor:nil
-                                      launchIdentifiers:nil];
-  if (!opened)
-    return "Failed to open URL";
-
-  return "";
-}
-
 NSString* GetLoginHelperBundleIdentifier() {
   return [[[NSBundle mainBundle] bundleIdentifier]
       stringByAppendingString:@".loginhelper"];
-}
-
-std::string OpenPathOnThread(const base::FilePath& full_path) {
-  NSString* path_string = base::SysUTF8ToNSString(full_path.value());
-  NSURL* url = [NSURL fileURLWithPath:path_string];
-  if (!url)
-    return "Invalid path";
-
-  const NSWorkspaceLaunchOptions launch_options =
-      NSWorkspaceLaunchAsync | NSWorkspaceLaunchWithErrorPresentation;
-  BOOL success = [[NSWorkspace sharedWorkspace] openURLs:@[ url ]
-                                 withAppBundleIdentifier:nil
-                                                 options:launch_options
-                          additionalEventParamDescriptor:nil
-                                       launchIdentifiers:nil];
-
-  return success ? "" : "Failed to open path";
 }
 
 // https://developer.apple.com/documentation/servicemanagement/1561515-service_management_errors?language=objc
@@ -107,7 +64,7 @@ std::string GetLaunchStringForError(NSError* error) {
         return "The specified path doesn't exist or the helper tool at the "
                "specified path isn't valid";
       default:
-        return "Failed to register the login item";
+        return base::SysNSStringToUTF8([error localizedDescription]);
     }
   }
 
@@ -124,7 +81,7 @@ SMAppService* GetServiceForType(const std::string& type,
     return [SMAppService agentServiceWithPlistName:service_name];
   } else if (type == "daemonService") {
     return [SMAppService daemonServiceWithPlistName:service_name];
-  } else if (type == "loginService") {
+  } else if (type == "loginItemService") {
     return [SMAppService loginItemServiceWithIdentifier:service_name];
   } else {
     LOG(ERROR) << "Unrecognized login item type";
@@ -170,7 +127,15 @@ void ShowItemInFolder(const base::FilePath& path) {
 }
 
 void OpenPath(const base::FilePath& full_path, OpenCallback callback) {
-  std::move(callback).Run(OpenPathOnThread(full_path));
+  DCHECK([NSThread isMainThread]);
+  NSURL* ns_url = base::apple::FilePathToNSURL(full_path);
+  if (!ns_url) {
+    std::move(callback).Run("Invalid path");
+    return;
+  }
+
+  bool success = [[NSWorkspace sharedWorkspace] openURL:ns_url];
+  std::move(callback).Run(success ? "" : "Failed to open path");
 }
 
 void OpenExternal(const GURL& url,
@@ -183,28 +148,45 @@ void OpenExternal(const GURL& url,
     return;
   }
 
-  bool activate = options.activate;
-  __block OpenCallback c = std::move(callback);
-  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-                 ^{
-                   __block std::string error = OpenURL(ns_url, activate);
-                   dispatch_async(dispatch_get_main_queue(), ^{
-                     std::move(c).Run(error);
-                   });
-                 });
+  // Check this to prevent system dialog from popping up on macOS Tahoe.
+  if (![[NSWorkspace sharedWorkspace] URLForApplicationToOpenURL:ns_url]) {
+    std::move(callback).Run("No application found to open URL");
+    return;
+  }
+
+  NSWorkspaceOpenConfiguration* configuration =
+      [NSWorkspaceOpenConfiguration configuration];
+  configuration.activates = options.activate;
+
+  __block OpenCallback copied_callback = std::move(callback);
+  scoped_refptr<base::SequencedTaskRunner> runner =
+      base::SequencedTaskRunner::GetCurrentDefault();
+
+  [[NSWorkspace sharedWorkspace]
+                openURL:ns_url
+          configuration:configuration
+      completionHandler:^(NSRunningApplication* _Nullable app,
+                          NSError* _Nullable error) {
+        if (error) {
+          runner->PostTask(FROM_HERE, base::BindOnce(std::move(copied_callback),
+                                                     "Failed to open URL"));
+        } else {
+          runner->PostTask(FROM_HERE,
+                           base::BindOnce(std::move(copied_callback), ""));
+        }
+      }];
 }
 
 bool MoveItemToTrashWithError(const base::FilePath& full_path,
                               bool delete_on_fail,
                               std::string* error) {
-  NSString* path_string = base::SysUTF8ToNSString(full_path.value());
-  if (!path_string) {
+  NSURL* url = base::apple::FilePathToNSURL(full_path);
+  if (!url) {
     *error = "Invalid file path: " + full_path.value();
     LOG(WARNING) << *error;
     return false;
   }
 
-  NSURL* url = [NSURL fileURLWithPath:path_string];
   NSError* err = nil;
   BOOL did_trash = [[NSFileManager defaultManager] trashItemAtURL:url
                                                  resultingItemURL:nil
@@ -244,7 +226,6 @@ void Beep() {
 
 std::string GetLoginItemEnabled(const std::string& type,
                                 const std::string& service_name) {
-  bool enabled = GetLoginItemEnabledDeprecated();
   if (@available(macOS 13, *)) {
     SMAppService* service = GetServiceForType(type, service_name);
     SMAppServiceStatus status = [service status];
@@ -256,10 +237,11 @@ std::string GetLoginItemEnabled(const std::string& type,
       return "requires-approval";
     else if (status == SMAppServiceStatusNotFound) {
       // If the login item was enabled with the old API, return that.
-      return enabled ? "enabled-deprecated" : "not-found";
+      return GetLoginItemEnabledDeprecated() ? "enabled-deprecated"
+                                             : "not-found";
     }
   }
-  return enabled ? "enabled" : "not-registered";
+  return GetLoginItemEnabledDeprecated() ? "enabled" : "not-registered";
 }
 
 bool SetLoginItemEnabled(const std::string& type,

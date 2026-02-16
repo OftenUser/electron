@@ -7,11 +7,13 @@
 
 #include <string>
 
-#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/views/animation/ink_drop_highlight.h"
 #include "ui/views/controls/button/menu_button.h"
+
+namespace ui {
+struct AXNodeData;
+}
 
 namespace electron {
 
@@ -34,9 +36,6 @@ class SubmenuButton : public views::MenuButton {
 
   char16_t accelerator() const { return accelerator_; }
 
-  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
-
-  // views::MenuButton:
   void PaintButtonContents(gfx::Canvas* canvas) override;
 
  private:

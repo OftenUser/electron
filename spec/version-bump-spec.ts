@@ -1,9 +1,10 @@
 import { expect } from 'chai';
-import { GitProcess, IGitExecutionOptions, IGitResult } from 'dugite';
-import { nextVersion } from '../script/release/version-bumper';
-import * as utils from '../script/release/version-utils';
 import * as sinon from 'sinon';
+
+import { SpawnSyncReturns } from 'node:child_process';
+
 import { ifdescribe } from './lib/spec-helpers';
+import { nextVersion } from '../script/release/version-bumper';
 
 class GitFake {
   branches: {
@@ -33,10 +34,10 @@ class GitFake {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  exec (args: string[], path: string, options?: IGitExecutionOptions | undefined): Promise<IGitResult> {
+  exec (command: string, args: string[], options?: any): SpawnSyncReturns<string> {
     let stdout = '';
     const stderr = '';
-    const exitCode = 0;
+    const status = 0;
 
     // handle for promoting from current master HEAD
     let branch = 'stable';
@@ -48,50 +49,11 @@ class GitFake {
     if (!this.branches[branch]) this.setBranch(branch);
 
     stdout = this.branches[branch].join('\n');
-    return Promise.resolve({ exitCode, stdout, stderr });
+    return { status, stdout, stderr, pid: 0, output: [null, stdout, stderr], signal: null };
   }
 }
 
 describe('version-bumper', () => {
-  describe('makeVersion', () => {
-    it('makes a version with a period delimiter', () => {
-      const components = {
-        major: 2,
-        minor: 0,
-        patch: 0
-      };
-
-      const version = utils.makeVersion(components, '.');
-      expect(version).to.equal('2.0.0');
-    });
-
-    it('makes a version with a period delimiter and a partial pre', () => {
-      const components = {
-        major: 2,
-        minor: 0,
-        patch: 0,
-        pre: ['nightly', 12345678]
-      };
-
-      const version = utils.makeVersion(components, '.', utils.preType.PARTIAL);
-      expect(version).to.equal('2.0.0.12345678');
-    });
-
-    it('makes a version with a period delimiter and a full pre', () => {
-      const components = {
-        major: 2,
-        minor: 0,
-        patch: 0,
-        pre: ['nightly', 12345678]
-      };
-
-      const version = utils.makeVersion(components, '.', utils.preType.FULL);
-      expect(version).to.equal('2.0.0-nightly.12345678');
-    });
-  });
-
-  // On macOS Circle CI we don't have a real git environment due to running
-  // gclient sync on a linux machine. These tests therefore don't run as expected.
   ifdescribe(!(process.platform === 'linux' && process.arch.indexOf('arm') === 0) && process.platform !== 'darwin')('nextVersion', () => {
     describe('bump versions', () => {
       const nightlyPattern = /[0-9.]*(-nightly.(\d{4})(\d{2})(\d{2}))$/g;
@@ -185,6 +147,7 @@ describe('version-bumper', () => {
       it('throws on an invalid bump type', () => {
         const version = 'v2.0.0';
         return expect(
+          // @ts-expect-error 'WRONG' is not a valid bump type
           nextVersion('WRONG', version)
         ).to.be.rejectedWith('Invalid bump type.');
       });
@@ -201,8 +164,14 @@ describe('version-bumper', () => {
     const gitFake = new GitFake();
 
     beforeEach(() => {
-      const wrapper = (args: string[], path: string, options?: IGitExecutionOptions | undefined) => gitFake.exec(args, path, options);
-      sandbox.replace(GitProcess, 'exec', wrapper);
+      const wrapper = (command: unknown, args: unknown, options?: unknown) => {
+        if (command === 'git' && Array.isArray(args)) {
+          return gitFake.exec(command as string, args as string[], options);
+        }
+        // Default behavior for non-git commands
+        return { status: 0, stdout: '', stderr: '', pid: 0, output: [null, '', ''], signal: null };
+      };
+      sandbox.stub(require('node:child_process'), 'spawnSync').callsFake(wrapper);
     });
 
     afterEach(() => {

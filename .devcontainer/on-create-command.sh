@@ -39,7 +39,6 @@ if [ ! -f $buildtools/configs/evm.testing.json ]; then
   write_config() {
     echo "
         {
-            \"goma\": \"$1\",
             \"root\": \"/workspaces/gclient\",
             \"remotes\": {
                 \"electron\": {
@@ -49,7 +48,8 @@ if [ ! -f $buildtools/configs/evm.testing.json ]; then
             \"gen\": {
                 \"args\": [
                     \"import(\\\"//electron/build/args/testing.gn\\\")\",
-                    \"import(\\\"/home/builduser/.electron_build_tools/third_party/goma.gn\\\")\"
+                    \"use_remoteexec = true\",
+                    \"use_siso=true\"
                 ],
                 \"out\": \"Testing\"
             },
@@ -57,26 +57,17 @@ if [ ! -f $buildtools/configs/evm.testing.json ]; then
                 \"CHROMIUM_BUILDTOOLS_PATH\": \"/workspaces/gclient/src/buildtools\",
                 \"GIT_CACHE_PATH\": \"/workspaces/gclient/.git-cache\"
             },
-            \"\$schema\": \"file:///home/builduser/.electron_build_tools/evm-config.schema.json\"
+            \"\$schema\": \"file:///home/builduser/.electron_build_tools/evm-config.schema.json\",
+            \"configValidationLevel\": \"strict\",
+            \"remoteBuild\": \"siso\",
+            \"preserveSDK\": 5
         }
     " >$buildtools/configs/evm.testing.json
   }
 
-  # Start out as cache only
-  write_config cache-only
+  write_config
 
-  e use testing
-
-  # Attempt to auth to the goma service via codespaces tokens
-  # if it works we can use the goma cluster
-  export NOTGOMA_CODESPACES_TOKEN=$GITHUB_TOKEN
-  if e d goma_auth login; then
-    echo "$GITHUB_USER has GOMA access - switching to cluster mode"
-    write_config cluster
-  fi
+  e use testing 
 else
   echo "build-tools testing config already exists"
-
-  # Re-auth with the goma cluster regardless.
-  NOTGOMA_CODESPACES_TOKEN=$GITHUB_TOKEN e d goma_auth login || true
 fi

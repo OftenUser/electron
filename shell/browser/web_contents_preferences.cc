@@ -6,16 +6,14 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/command_line.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/memory/ptr_util.h"
-#include "base/strings/string_number_conversions.h"
-#include "base/strings/utf_string_conversions.h"
 #include "cc/base/switches.h"
-#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "content/public/common/content_switches.h"
@@ -46,7 +44,7 @@ struct Converter<blink::mojom::AutoplayPolicy> {
                      blink::mojom::AutoplayPolicy* out) {
     using Val = blink::mojom::AutoplayPolicy;
     static constexpr auto Lookup =
-        base::MakeFixedFlatMap<base::StringPiece, Val>({
+        base::MakeFixedFlatMap<std::string_view, Val>({
             {"document-user-activation-required",
              Val::kDocumentUserActivationRequired},
             {"no-user-gesture-required", Val::kNoUserGestureRequired},
@@ -63,7 +61,7 @@ struct Converter<blink::mojom::V8CacheOptions> {
                      blink::mojom::V8CacheOptions* out) {
     using Val = blink::mojom::V8CacheOptions;
     static constexpr auto Lookup =
-        base::MakeFixedFlatMap<base::StringPiece, Val>({
+        base::MakeFixedFlatMap<std::string_view, Val>({
             {"bypassHeatCheck", Val::kCodeWithoutHeatCheck},
             {"bypassHeatCheckAndEagerCompile", Val::kFullCodeWithoutHeatCheck},
             {"code", Val::kCode},
@@ -107,8 +105,7 @@ WebContentsPreferences::WebContentsPreferences(
 }
 
 WebContentsPreferences::~WebContentsPreferences() {
-  Instances().erase(std::remove(Instances().begin(), Instances().end(), this),
-                    Instances().end());
+  std::erase(Instances(), this);
 }
 
 void WebContentsPreferences::Clear() {
@@ -119,13 +116,12 @@ void WebContentsPreferences::Clear() {
   node_integration_in_worker_ = false;
   disable_html_fullscreen_window_resize_ = false;
   webview_tag_ = false;
-  sandbox_ = absl::nullopt;
+  sandbox_ = std::nullopt;
   context_isolation_ = true;
   javascript_ = true;
   images_ = true;
   text_areas_are_resizable_ = true;
   webgl_ = true;
-  enable_websql_ = true;
   enable_preferred_size_mode_ = false;
   web_security_ = true;
   allow_running_insecure_content_ = false;
@@ -133,25 +129,27 @@ void WebContentsPreferences::Clear() {
   navigate_on_drag_drop_ = false;
   autoplay_policy_ = blink::mojom::AutoplayPolicy::kNoUserGestureRequired;
   default_font_family_.clear();
-  default_font_size_ = absl::nullopt;
-  default_monospace_font_size_ = absl::nullopt;
-  minimum_font_size_ = absl::nullopt;
-  default_encoding_ = absl::nullopt;
+  default_font_size_ = std::nullopt;
+  default_monospace_font_size_ = std::nullopt;
+  minimum_font_size_ = std::nullopt;
+  default_encoding_ = std::nullopt;
   is_webview_ = false;
   custom_args_.clear();
   custom_switches_.clear();
-  enable_blink_features_ = absl::nullopt;
-  disable_blink_features_ = absl::nullopt;
+  enable_blink_features_ = std::nullopt;
+  disable_blink_features_ = std::nullopt;
   disable_popups_ = false;
   disable_dialogs_ = false;
   safe_dialogs_ = false;
-  safe_dialogs_message_ = absl::nullopt;
+  safe_dialogs_message_ = std::nullopt;
   ignore_menu_shortcuts_ = false;
-  background_color_ = absl::nullopt;
+  background_color_ = std::nullopt;
   image_animation_policy_ =
       blink::mojom::ImageAnimationPolicy::kImageAnimationPolicyAllowed;
-  preload_path_ = absl::nullopt;
+  preload_path_ = std::nullopt;
   v8_cache_options_ = blink::mojom::V8CacheOptions::kDefault;
+  deprecated_paste_enabled_ = false;
+  focus_on_navigation_ = true;
 
 #if BUILDFLAG(IS_MAC)
   scroll_bounce_ = false;
@@ -184,7 +182,6 @@ void WebContentsPreferences::SetFromDictionary(
   web_preferences.Get(options::kTextAreasAreResizable,
                       &text_areas_are_resizable_);
   web_preferences.Get(options::kWebGL, &webgl_);
-  web_preferences.Get(options::kEnableWebSQL, &enable_websql_);
   web_preferences.Get(options::kEnablePreferredSizeMode,
                       &enable_preferred_size_mode_);
   web_preferences.Get(options::kWebSecurity, &web_security_);
@@ -219,7 +216,7 @@ void WebContentsPreferences::SetFromDictionary(
   }
   std::string background_color;
   if (web_preferences.GetHidden(options::kBackgroundColor, &background_color))
-    background_color_ = ParseCSSColor(background_color);
+    background_color_ = ParseCSSColor(background_color).value_or(SK_ColorWHITE);
   std::string safe_dialogs_message;
   if (web_preferences.Get("safeDialogsMessage", &safe_dialogs_message))
     safe_dialogs_message_ = safe_dialogs_message;
@@ -250,6 +247,11 @@ void WebContentsPreferences::SetFromDictionary(
 
   web_preferences.Get("v8CacheOptions", &v8_cache_options_);
 
+  web_preferences.Get(options::kEnableDeprecatedPaste,
+                      &deprecated_paste_enabled_);
+
+  web_preferences.Get(options::kFocusOnNavigation, &focus_on_navigation_);
+
 #if BUILDFLAG(IS_MAC)
   web_preferences.Get(options::kScrollBounce, &scroll_bounce_);
 #endif
@@ -259,14 +261,6 @@ void WebContentsPreferences::SetFromDictionary(
 #endif
 
   SaveLastPreferences();
-}
-
-bool WebContentsPreferences::GetSafeDialogsMessage(std::string* message) const {
-  if (safe_dialogs_message_) {
-    *message = *safe_dialogs_message_;
-    return true;
-  }
-  return false;
 }
 
 bool WebContentsPreferences::SetImageAnimationPolicy(std::string policy) {
@@ -286,15 +280,6 @@ bool WebContentsPreferences::SetImageAnimationPolicy(std::string policy) {
   return false;
 }
 
-bool WebContentsPreferences::GetPreloadPath(base::FilePath* path) const {
-  DCHECK(path);
-  if (preload_path_) {
-    *path = *preload_path_;
-    return true;
-  }
-  return false;
-}
-
 bool WebContentsPreferences::IsSandboxed() const {
   if (sandbox_)
     return *sandbox_;
@@ -305,7 +290,7 @@ bool WebContentsPreferences::IsSandboxed() const {
 
 // static
 content::WebContents* WebContentsPreferences::GetWebContentsFromProcessID(
-    int process_id) {
+    content::ChildProcessId process_id) {
   for (WebContentsPreferences* preferences : Instances()) {
     content::WebContents* web_contents = preferences->web_contents_;
     if (web_contents->GetPrimaryMainFrame()->GetProcess()->GetID() ==
@@ -376,14 +361,13 @@ void WebContentsPreferences::AppendCommandLineSwitches(
 }
 
 void WebContentsPreferences::SaveLastPreferences() {
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set(options::kNodeIntegration, node_integration_);
   dict.Set(options::kNodeIntegrationInSubFrames,
            node_integration_in_sub_frames_);
   dict.Set(options::kSandbox, IsSandboxed());
   dict.Set(options::kContextIsolation, context_isolation_);
   dict.Set(options::kJavaScript, javascript_);
-  dict.Set(options::kEnableWebSQL, enable_websql_);
   dict.Set(options::kWebviewTag, webview_tag_);
   dict.Set("disablePopups", disable_popups_);
   dict.Set(options::kWebSecurity, web_security_);
@@ -493,9 +477,10 @@ void WebContentsPreferences::OverrideWebkitPrefs(
 
   prefs->enable_plugins = plugins_;
   prefs->webview_tag = webview_tag_;
-  prefs->enable_websql = enable_websql_;
 
   prefs->v8_cache_options = v8_cache_options_;
+
+  prefs->dom_paste_enabled = deprecated_paste_enabled_;
 }
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(WebContentsPreferences);

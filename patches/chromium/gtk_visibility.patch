@@ -6,7 +6,7 @@ Subject: gtk_visibility.patch
 Allow electron to depend on GTK in the GN build.
 
 diff --git a/build/config/linux/gtk/BUILD.gn b/build/config/linux/gtk/BUILD.gn
-index 355067ea178bee1466f9df5a3ed146e9f09f0768..1b385d12692deece9e10722fc70215e8c645f6af 100644
+index fdc3442590bddda969681d49c451d32f086bd5d1..b6fd63c0c845e5d7648e8693f1639b1f0f39a779 100644
 --- a/build/config/linux/gtk/BUILD.gn
 +++ b/build/config/linux/gtk/BUILD.gn
 @@ -27,6 +27,7 @@ pkg_config("gtk_internal_config") {
@@ -18,7 +18,7 @@ index 355067ea178bee1466f9df5a3ed146e9f09f0768..1b385d12692deece9e10722fc70215e8
      # on GTK.
      "//examples:peerconnection_client",
 diff --git a/ui/ozone/platform/x11/BUILD.gn b/ui/ozone/platform/x11/BUILD.gn
-index 0663efec8de1066ea312297693d6cc627584cd5a..14b7f333ad12b5c96bdb5ba4ad167f19abc39793 100644
+index ffae34799460f555e0269ad5dcfd9c0f668b16ea..706c8de26b2409f44dc6e53441740ff053cbb312 100644
 --- a/ui/ozone/platform/x11/BUILD.gn
 +++ b/ui/ozone/platform/x11/BUILD.gn
 @@ -6,7 +6,7 @@ import("//build/config/chromeos/ui_mode.gni")

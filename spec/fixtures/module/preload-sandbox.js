@@ -32,13 +32,12 @@
         systemMemoryInfo: invoke(() => process.getSystemMemoryInfo()),
         systemVersion: invoke(() => process.getSystemVersion()),
         cpuUsage: invoke(() => process.getCPUUsage()),
-        ioCounters: invoke(() => process.getIOCounters()),
         uptime: invoke(() => process.uptime()),
-        // eslint-disable-next-line unicorn/prefer-node-protocol
+        // eslint-disable-next-line import/enforce-node-protocol-usage
         nodeEvents: invoke(() => require('events') === require('node:events')),
-        // eslint-disable-next-line unicorn/prefer-node-protocol
+        // eslint-disable-next-line import/enforce-node-protocol-usage
         nodeTimers: invoke(() => require('timers') === require('node:timers')),
-        // eslint-disable-next-line unicorn/prefer-node-protocol
+        // eslint-disable-next-line import/enforce-node-protocol-usage
         nodeUrl: invoke(() => require('url') === require('node:url')),
         env: process.env,
         execPath: process.execPath,

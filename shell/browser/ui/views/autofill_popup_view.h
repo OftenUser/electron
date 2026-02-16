@@ -6,30 +6,32 @@
 #define ELECTRON_SHELL_BROWSER_UI_VIEWS_AUTOFILL_POPUP_VIEW_H_
 
 #include <memory>
-
-#include "shell/browser/ui/autofill_popup.h"
+#include <optional>
 
 #include "base/memory/raw_ptr.h"
 #include "content/public/browser/render_widget_host.h"
-#include "content/public/common/input/native_web_keyboard_event.h"
 #include "electron/buildflags/buildflags.h"
 #include "shell/browser/osr/osr_view_proxy.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
-#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/drag_controller.h"
-#include "ui/views/focus/widget_focus_manager.h"
+#include "ui/views/focus/native_view_focus_manager.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/widget_observer.h"
 
+namespace input {
+struct NativeWebKeyboardEvent;
+}  // namespace input
+
+namespace ui {
+struct AXNodeData;
+}
+
 namespace electron {
 
-const int kPopupBorderThickness = 1;
-const int kSmallerFontSizeDelta = -1;
-const int kEndPadding = 8;
-const int kNamePadding = 15;
-const int kRowHeight = 24;
+constexpr int kPopupBorderThickness = 1;
+constexpr int kEndPadding = 8;
 
 class AutofillPopup;
 
@@ -42,24 +44,24 @@ class AutofillPopupChildView : public views::View {
   explicit AutofillPopupChildView(const std::u16string& suggestion)
       : suggestion_(suggestion) {
     SetFocusBehavior(FocusBehavior::ALWAYS);
+
+    auto& view_a11y = GetViewAccessibility();
+    view_a11y.SetRole(ax::mojom::Role::kMenuItem);
+    view_a11y.SetName(suggestion);
   }
 
   // disable copy
   AutofillPopupChildView(const AutofillPopupChildView&) = delete;
   AutofillPopupChildView& operator=(const AutofillPopupChildView&) = delete;
 
- private:
-  ~AutofillPopupChildView() override {}
-
-  // views::Views implementation
-  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
+  ~AutofillPopupChildView() override = default;
 
   std::u16string suggestion_;
 };
 
 class AutofillPopupView : public views::WidgetDelegateView,
-                          public views::WidgetFocusChangeListener,
-                          public views::WidgetObserver,
+                          private views::NativeViewFocusChangeListener,
+                          private views::WidgetObserver,
                           public views::DragController {
  public:
   explicit AutofillPopupView(AutofillPopup* popup,
@@ -73,6 +75,7 @@ class AutofillPopupView : public views::WidgetDelegateView,
 
   int GetSelectedLine() { return selected_line_.value_or(-1); }
 
+  // views::WidgetDelegateView implementation.
   void WriteDragDataForView(views::View*,
                             const gfx::Point&,
                             ui::OSExchangeData*) override;
@@ -84,8 +87,8 @@ class AutofillPopupView : public views::WidgetDelegateView,
  private:
   friend class AutofillPopup;
 
-  void OnSelectedRowChanged(absl::optional<int> previous_row_selection,
-                            absl::optional<int> current_row_selection);
+  void OnSelectedRowChanged(std::optional<int> previous_row_selection,
+                            std::optional<int> current_row_selection);
 
   // Draw the given autofill entry in |entry_rect|.
   void DrawAutofillEntry(gfx::Canvas* canvas,
@@ -101,7 +104,6 @@ class AutofillPopupView : public views::WidgetDelegateView,
 
   // views::Views implementation.
   void OnPaint(gfx::Canvas* canvas) override;
-  void GetAccessibleNodeData(ui::AXNodeData* node_data) override;
   void OnMouseCaptureLost() override;
   bool OnMouseDragged(const ui::MouseEvent& event) override;
   void OnMouseExited(const ui::MouseEvent& event) override;
@@ -110,7 +112,7 @@ class AutofillPopupView : public views::WidgetDelegateView,
   void OnMouseReleased(const ui::MouseEvent& event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
-  bool HandleKeyPressEvent(const content::NativeWebKeyboardEvent& event);
+  bool HandleKeyPressEvent(const input::NativeWebKeyboardEvent& event);
 
   // views::WidgetFocusChangeListener implementation.
   void OnNativeFocusChanged(gfx::NativeView focused_now) override;
@@ -122,7 +124,7 @@ class AutofillPopupView : public views::WidgetDelegateView,
   void AcceptSuggestion(int index);
   bool AcceptSelectedLine();
   void AcceptSelection(const gfx::Point& point);
-  void SetSelectedLine(absl::optional<int> selected_line);
+  void SetSelectedLine(std::optional<int> selected_line);
   void SetSelection(const gfx::Point& point);
   void SelectNextLine();
   void SelectPreviousLine();
@@ -141,7 +143,7 @@ class AutofillPopupView : public views::WidgetDelegateView,
   base::Time show_time_;
 
   // The index of the currently selected line
-  absl::optional<int> selected_line_;
+  std::optional<int> selected_line_;
 
   std::unique_ptr<OffscreenViewProxy> view_proxy_;
 

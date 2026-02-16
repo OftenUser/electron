@@ -8,10 +8,9 @@
 
 #include <commctrl.h>
 
-#include <map>
 #include <vector>
 
-#include "base/containers/contains.h"
+#include "base/containers/flat_map.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -20,8 +19,8 @@
 #include "shell/browser/browser.h"
 #include "shell/browser/native_window_views.h"
 #include "shell/browser/ui/win/dialog_thread.h"
-#include "ui/gfx/icon_util.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/win/icon_util.h"
 
 namespace electron {
 
@@ -41,8 +40,8 @@ struct DialogResult {
 // Note that the HWND is stored in a unique_ptr, because the pointer of HWND
 // will be passed between threads and we need to ensure the memory of HWND is
 // not changed while dialogs map is modified.
-std::map<int, std::unique_ptr<HWND>>& GetDialogsMap() {
-  static base::NoDestructor<std::map<int, std::unique_ptr<HWND>>> dialogs;
+base::flat_map<int, std::unique_ptr<HWND>>& GetDialogsMap() {
+  static base::NoDestructor<base::flat_map<int, std::unique_ptr<HWND>>> dialogs;
   return *dialogs;
 }
 
@@ -95,7 +94,7 @@ CommonButtonID GetCommonID(const std::wstring& button) {
 // Determine whether the buttons are common buttons, if so map common ID
 // to button ID.
 void MapToCommonID(const std::vector<std::wstring>& buttons,
-                   std::map<int, int>* id_map,
+                   base::flat_map<int, int>* id_map,
                    TASKDIALOG_COMMON_BUTTON_FLAGS* button_flags,
                    std::vector<TASKDIALOG_BUTTON>* dialog_buttons) {
   for (size_t i = 0; i < buttons.size(); ++i) {
@@ -161,10 +160,22 @@ DialogResult ShowTaskDialogWstr(gfx::AcceleratedWidget parent,
 
   if (parent) {
     config.hwndParent = parent;
+    config.dwFlags |= TDF_POSITION_RELATIVE_TO_WINDOW;
   }
 
-  if (default_id > 0)
-    config.nDefaultButton = kIDStart + default_id;
+  if (default_id >= 0 &&
+      base::checked_cast<size_t>(default_id) < buttons.size()) {
+    if (!no_link) {
+      auto common = GetCommonID(buttons[default_id]);
+      if (common.button != -1) {
+        config.nDefaultButton = common.id;
+      } else {
+        config.nDefaultButton = kIDStart + default_id;
+      }
+    } else {
+      config.nDefaultButton = kIDStart + default_id;
+    }
+  }
 
   // TaskDialogIndirect doesn't allow empty name, if we set empty title it
   // will show "electron.exe" in title.
@@ -176,7 +187,7 @@ DialogResult ShowTaskDialogWstr(gfx::AcceleratedWidget parent,
     config.pszWindowTitle = base::as_wcstr(title);
   }
 
-  base::win::ScopedHICON hicon;
+  base::win::ScopedGDIObject<HICON> hicon;
   if (!icon.isNull()) {
     hicon = IconUtil::CreateHICONFromSkBitmap(*icon.bitmap());
     config.dwFlags |= TDF_USE_HICON_MAIN;
@@ -215,7 +226,7 @@ DialogResult ShowTaskDialogWstr(gfx::AcceleratedWidget parent,
 
   // Iterate through the buttons, put common buttons in dwCommonButtons
   // and custom buttons in pButtons.
-  std::map<int, int> id_map;
+  base::flat_map<int, int> id_map;
   std::vector<TASKDIALOG_BUTTON> dialog_buttons;
   if (no_link) {
     for (size_t i = 0; i < buttons.size(); ++i)
@@ -242,7 +253,7 @@ DialogResult ShowTaskDialogWstr(gfx::AcceleratedWidget parent,
   TaskDialogIndirect(&config, &id, nullptr, &verification_flag_checked);
 
   int button_id;
-  if (base::Contains(id_map, id))  // common button.
+  if (id_map.contains(id))  // common button.
     button_id = id_map[id];
   else if (id >= kIDStart)  // custom button.
     button_id = id - kIDStart;
@@ -289,7 +300,7 @@ void ShowMessageBox(const MessageBoxSettings& settings,
   // kHwndReserve in the dialogs map for now.
   HWND* hwnd = nullptr;
   if (settings.id) {
-    if (base::Contains(GetDialogsMap(), *settings.id))
+    if (GetDialogsMap().contains(*settings.id))
       CloseMessageBox(*settings.id);
     auto it = GetDialogsMap().emplace(*settings.id,
                                       std::make_unique<HWND>(kHwndReserve));
@@ -304,7 +315,7 @@ void ShowMessageBox(const MessageBoxSettings& settings,
   dialog_thread::Run(base::BindOnce(&ShowTaskDialogUTF8, settings,
                                     parent_widget, base::Unretained(hwnd)),
                      base::BindOnce(
-                         [](MessageBoxCallback callback, absl::optional<int> id,
+                         [](MessageBoxCallback callback, std::optional<int> id,
                             DialogResult result) {
                            if (id)
                              GetDialogsMap().erase(*id);

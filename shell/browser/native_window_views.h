@@ -8,33 +8,35 @@
 #include "shell/browser/native_window.h"
 
 #include <memory>
-#include <set>
+#include <optional>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "shell/browser/ui/views/root_view.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#include "ui/base/ozone_buildflags.h"
 #include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
 #include "ui/views/widget/widget_observer.h"
 
-#if defined(USE_OZONE)
-#include "ui/ozone/buildflags.h"
-#if BUILDFLAG(OZONE_PLATFORM_X11)
-#define USE_OZONE_PLATFORM_X11
-#endif
-#endif
-
 #if BUILDFLAG(IS_WIN)
 #include "base/win/scoped_gdi_object.h"
+#include "content/public/browser/scoped_accessibility_mode.h"
 #include "shell/browser/ui/win/taskbar_host.h"
-
 #endif
+
+namespace gin {
+class Arguments;
+}  // namespace gin
 
 namespace electron {
 
+#if BUILDFLAG(IS_LINUX)
+class ClientFrameViewLinux;
 class GlobalMenuBarX11;
-class WindowStateWatcher;
+#endif
 
-#if defined(USE_OZONE_PLATFORM_X11)
+#if BUILDFLAG(IS_OZONE_X11)
 class EventDisabler;
 #endif
 
@@ -43,10 +45,11 @@ gfx::Rect ScreenToDIPRect(HWND hwnd, const gfx::Rect& pixel_bounds);
 #endif
 
 class NativeWindowViews : public NativeWindow,
-                          public views::WidgetObserver,
-                          public ui::EventHandler {
+                          private views::WidgetObserver,
+                          private ui::EventHandler {
  public:
-  NativeWindowViews(const gin_helper::Dictionary& options,
+  NativeWindowViews(int32_t base_window_id,
+                    const gin_helper::Dictionary& options,
                     NativeWindow* parent);
   ~NativeWindowViews() override;
 
@@ -55,27 +58,27 @@ class NativeWindowViews : public NativeWindow,
   void Close() override;
   void CloseImmediately() override;
   void Focus(bool focus) override;
-  bool IsFocused() override;
+  bool IsFocused() const override;
   void Show() override;
   void ShowInactive() override;
   void Hide() override;
-  bool IsVisible() override;
-  bool IsEnabled() override;
+  bool IsVisible() const override;
+  bool IsEnabled() const override;
   void SetEnabled(bool enable) override;
   void Maximize() override;
   void Unmaximize() override;
-  bool IsMaximized() override;
+  bool IsMaximized() const override;
   void Minimize() override;
   void Restore() override;
-  bool IsMinimized() override;
+  bool IsMinimized() const override;
   void SetFullScreen(bool fullscreen) override;
   bool IsFullscreen() const override;
   void SetBounds(const gfx::Rect& bounds, bool animate) override;
-  gfx::Rect GetBounds() override;
-  gfx::Rect GetContentBounds() override;
-  gfx::Size GetContentSize() override;
-  gfx::Rect GetNormalBounds() override;
-  SkColor GetBackgroundColor() override;
+  gfx::Rect GetBounds() const override;
+  gfx::Rect GetContentBounds() const override;
+  gfx::Size GetContentSize() const override;
+  gfx::Rect GetNormalBounds() const override;
+  SkColor GetBackgroundColor() const override;
   void SetContentSizeConstraints(
       const extensions::SizeConstraints& size_constraints) override;
 #if BUILDFLAG(IS_WIN)
@@ -84,45 +87,46 @@ class NativeWindowViews : public NativeWindow,
   void SetResizable(bool resizable) override;
   bool MoveAbove(const std::string& sourceId) override;
   void MoveTop() override;
-  bool IsResizable() override;
+  bool IsResizable() const override;
   void SetAspectRatio(double aspect_ratio,
                       const gfx::Size& extra_size) override;
+  bool CanResize() const override;
   void SetMovable(bool movable) override;
-  bool IsMovable() override;
+  bool IsMovable() const override;
   void SetMinimizable(bool minimizable) override;
-  bool IsMinimizable() override;
+  bool IsMinimizable() const override;
   void SetMaximizable(bool maximizable) override;
-  bool IsMaximizable() override;
+  bool IsMaximizable() const override;
   void SetFullScreenable(bool fullscreenable) override;
-  bool IsFullScreenable() override;
+  bool IsFullScreenable() const override;
   void SetClosable(bool closable) override;
-  bool IsClosable() override;
+  bool IsClosable() const override;
   void SetAlwaysOnTop(ui::ZOrderLevel z_order,
                       const std::string& level,
                       int relativeLevel) override;
-  ui::ZOrderLevel GetZOrderLevel() override;
+  ui::ZOrderLevel GetZOrderLevel() const override;
   void Center() override;
   void Invalidate() override;
-  void SetTitle(const std::string& title) override;
-  std::string GetTitle() override;
+  [[nodiscard]] bool IsActive() const override;
   void FlashFrame(bool flash) override;
   void SetSkipTaskbar(bool skip) override;
-  void SetExcludedFromShownWindowsMenu(bool excluded) override;
-  bool IsExcludedFromShownWindowsMenu() override;
+  void SetExcludedFromShownWindowsMenu(bool excluded) override {}
+  bool IsExcludedFromShownWindowsMenu() const override;
   void SetSimpleFullScreen(bool simple_fullscreen) override;
-  bool IsSimpleFullScreen() override;
+  bool IsSimpleFullScreen() const override;
   void SetKiosk(bool kiosk) override;
-  bool IsKiosk() override;
+  bool IsKiosk() const override;
   bool IsTabletMode() const override;
   void SetBackgroundColor(SkColor color) override;
   void SetHasShadow(bool has_shadow) override;
-  bool HasShadow() override;
+  bool HasShadow() const override;
   void SetOpacity(const double opacity) override;
-  double GetOpacity() override;
+  double GetOpacity() const override;
   void SetIgnoreMouseEvents(bool ignore, bool forward) override;
   void SetContentProtection(bool enable) override;
+  bool IsContentProtected() const override;
   void SetFocusable(bool focusable) override;
-  bool IsFocusable() override;
+  bool IsFocusable() const override;
   void SetMenu(ElectronMenuModel* menu_model) override;
   void SetParentWindow(NativeWindow* parent) override;
   gfx::NativeView GetNativeView() const override;
@@ -131,16 +135,17 @@ class NativeWindowViews : public NativeWindow,
                       const std::string& description) override;
   void SetProgressBar(double progress, const ProgressState state) override;
   void SetAutoHideMenuBar(bool auto_hide) override;
-  bool IsMenuBarAutoHide() override;
+  bool IsMenuBarAutoHide() const override;
   void SetMenuBarVisibility(bool visible) override;
-  bool IsMenuBarVisible() override;
+  bool IsMenuBarVisible() const override;
+  bool IsSnapped() const override;
   void SetBackgroundMaterial(const std::string& type) override;
 
   void SetVisibleOnAllWorkspaces(bool visible,
                                  bool visibleOnFullScreen,
                                  bool skipTransformProcessType) override;
 
-  bool IsVisibleOnAllWorkspaces() override;
+  bool IsVisibleOnAllWorkspaces() const override;
 
   void SetGTKDarkThemeEnabled(bool use_dark_theme) override;
 
@@ -154,9 +159,12 @@ class NativeWindowViews : public NativeWindow,
   void IncrementChildModals();
   void DecrementChildModals();
 
+  void SetTitleBarOverlay(const gin_helper::Dictionary& options,
+                          gin::Arguments* args);
+
 #if BUILDFLAG(IS_WIN)
   // Catch-all message handling and filtering. Called before
-  // HWNDMessageHandler's built-in handling, which may pre-empt some
+  // HWNDMessageHandler's built-in handling, which may preempt some
   // expectations in Views/Aura if messages are consumed. Returns true if the
   // message was consumed by the delegate and should not be processed further
   // by the HWNDMessageHandler. In this case, |result| is returned. |result| is
@@ -171,27 +179,32 @@ class NativeWindowViews : public NativeWindow,
 #endif
 
 #if BUILDFLAG(IS_WIN)
+  void SetAccentColor(
+      std::variant<std::monostate, bool, SkColor> accent_color) override;
+  std::variant<bool, std::string> GetAccentColor() const override;
+  void UpdateWindowAccentColor(bool active) override;
   TaskbarHost& taskbar_host() { return taskbar_host_; }
+  void UpdateThickFrame();
+  void SetLayered();
 #endif
 
-#if BUILDFLAG(IS_WIN)
-  bool IsWindowControlsOverlayEnabled() const {
-    return (title_bar_style_ == NativeWindowViews::TitleBarStyle::kHidden) &&
-           titlebar_overlay_;
-  }
   SkColor overlay_button_color() const { return overlay_button_color_; }
+  SkColor overlay_symbol_color() const { return overlay_symbol_color_; }
+
+#if BUILDFLAG(IS_LINUX)
+  // returns the ClientFrameViewLinux iff that is our FrameView type,
+  // nullptr otherwise.
+  ClientFrameViewLinux* GetClientFrameViewLinux();
+#endif
+
+ private:
   void set_overlay_button_color(SkColor color) {
     overlay_button_color_ = color;
   }
-  SkColor overlay_symbol_color() const { return overlay_symbol_color_; }
   void set_overlay_symbol_color(SkColor color) {
     overlay_symbol_color_ = color;
   }
 
-  void UpdateThickFrame();
-#endif
-
- private:
   // views::WidgetObserver:
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
   void OnWidgetBoundsChanged(views::Widget* widget,
@@ -203,22 +216,19 @@ class NativeWindowViews : public NativeWindow,
   views::View* GetInitiallyFocusedView() override;
   bool CanMaximize() const override;
   bool CanMinimize() const override;
-  std::u16string GetWindowTitle() const override;
   views::View* GetContentsView() override;
   bool ShouldDescendIntoChildForEventHandling(
       gfx::NativeView child,
       const gfx::Point& location) override;
   views::ClientView* CreateClientView(views::Widget* widget) override;
-  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameView(
+  std::unique_ptr<views::FrameView> CreateFrameView(
       views::Widget* widget) override;
   void OnWidgetMove() override;
 #if BUILDFLAG(IS_WIN)
   bool ExecuteWindowsCommand(int command_id) override;
-#endif
-
-#if BUILDFLAG(IS_WIN)
   void HandleSizeEvent(WPARAM w_param, LPARAM l_param);
   void ResetWindowControls();
+  void SetRoundedCorners(bool rounded);
   void SetForwardMouseMessages(bool forward);
   static LRESULT CALLBACK SubclassProc(HWND hwnd,
                                        UINT msg,
@@ -232,19 +242,18 @@ class NativeWindowViews : public NativeWindow,
 #endif
 
   // Enable/disable:
-  bool ShouldBeEnabled();
+  bool ShouldBeEnabled() const;
   void SetEnabledInternal(bool enabled);
 
   // NativeWindow:
-  void HandleKeyboardEvent(
-      content::WebContents*,
-      const content::NativeWebKeyboardEvent& event) override;
+  void HandleKeyboardEvent(content::WebContents*,
+                           const input::NativeWebKeyboardEvent& event) override;
 
   // ui::EventHandler:
   void OnMouseEvent(ui::MouseEvent* event) override;
 
   // Returns the restore state for the window.
-  ui::WindowShowState GetRestoredState();
+  ui::mojom::WindowShowState GetRestoredState();
 
   // Maintain window placement.
   void MoveBehindTaskBarIfNeeded();
@@ -260,19 +269,22 @@ class NativeWindowViews : public NativeWindow,
   // events from resizing the window.
   extensions::SizeConstraints old_size_constraints_;
 
-#if defined(USE_OZONE)
+#if BUILDFLAG(IS_LINUX)
   std::unique_ptr<GlobalMenuBarX11> global_menu_bar_;
-
 #endif
 
-#if defined(USE_OZONE_PLATFORM_X11)
+#if BUILDFLAG(IS_OZONE_X11)
   // To disable the mouse events.
   std::unique_ptr<EventDisabler> event_disabler_;
 #endif
 
+  // The color to use as the theme and symbol colors respectively for WCO.
+  SkColor overlay_button_color_ = SkColor();
+  SkColor overlay_symbol_color_ = SkColor();
+
 #if BUILDFLAG(IS_WIN)
 
-  ui::WindowShowState last_window_state_;
+  ui::mojom::WindowShowState last_window_state_;
 
   gfx::Rect last_normal_placement_bounds_;
 
@@ -289,15 +301,19 @@ class NativeWindowViews : public NativeWindow,
   gfx::Rect restore_bounds_;
 
   // The icons of window and taskbar.
-  base::win::ScopedHICON window_icon_;
-  base::win::ScopedHICON app_icon_;
+  base::win::ScopedGDIObject<HICON> window_icon_;
+  base::win::ScopedGDIObject<HICON> app_icon_;
 
   // The set of windows currently forwarding mouse messages.
-  static std::set<NativeWindowViews*> forwarding_windows_;
+  static inline base::NoDestructor<absl::flat_hash_set<NativeWindowViews*>>
+      forwarding_windows_;
   static HHOOK mouse_hook_;
   bool forwarding_mouse_messages_ = false;
   HWND legacy_window_ = nullptr;
   bool layered_ = false;
+
+  // This value is determined when the window is created.
+  bool rounded_corner_ = true;
 
   // Set to true if the window is always on top and behind the task bar.
   bool behind_task_bar_ = false;
@@ -311,16 +327,18 @@ class NativeWindowViews : public NativeWindow,
   // Whether the window is currently being moved.
   bool is_moving_ = false;
 
-  absl::optional<gfx::Rect> pending_bounds_change_;
+  // Whether or not the window was previously snapped e.g. before minimizing.
+  bool was_snapped_ = false;
 
-  // The color to use as the theme and symbol colors respectively for Window
-  // Controls Overlay if enabled on Windows.
-  SkColor overlay_button_color_;
-  SkColor overlay_symbol_color_;
+  std::variant<std::monostate, bool, SkColor> accent_color_;
+
+  std::optional<gfx::Rect> pending_bounds_change_;
 
   // The message ID of the "TaskbarCreated" message, sent to us when we need to
   // reset our thumbar buttons.
   UINT taskbar_created_message_ = 0;
+
+  std::unique_ptr<content::ScopedAccessibilityMode> scoped_accessibility_mode_;
 #endif
 
   // Handles unhandled keyboard messages coming back from the renderer process.
@@ -341,7 +359,6 @@ class NativeWindowViews : public NativeWindow,
   bool maximizable_ = true;
   bool minimizable_ = true;
   bool fullscreenable_ = true;
-  std::string title_;
   gfx::Size widget_size_;
   double opacity_ = 1.0;
   bool widget_destroyed_ = false;

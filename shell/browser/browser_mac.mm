@@ -16,11 +16,12 @@
 #include "base/i18n/rtl.h"
 #include "base/mac/mac_util.h"
 #include "base/mac/mac_util.mm"
-#include "base/strings/string_number_conversions.h"
 #include "base/strings/sys_string_conversions.h"
 #include "chrome/browser/browser_process.h"
-#include "net/base/mac/url_conversions.h"
+#include "electron/mas.h"
+#include "net/base/apple/url_conversions.h"
 #include "shell/browser/badging/badge_manager.h"
+#include "shell/browser/browser_observer.h"
 #include "shell/browser/javascript_environment.h"
 #include "shell/browser/mac/dict_util.h"
 #include "shell/browser/mac/electron_application.h"
@@ -30,7 +31,7 @@
 #include "shell/common/api/electron_api_native_image.h"
 #include "shell/common/application_info.h"
 #include "shell/common/gin_converters/image_converter.h"
-#include "shell/common/gin_helper/arguments.h"
+#include "shell/common/gin_converters/login_item_settings_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/error_thrower.h"
 #include "shell/common/gin_helper/promise.h"
@@ -89,8 +90,8 @@ bool CheckLoginItemStatus(bool* is_hidden) {
   return true;
 }
 
-Browser::LoginItemSettings GetLoginItemSettingsDeprecated() {
-  Browser::LoginItemSettings settings;
+LoginItemSettings GetLoginItemSettingsDeprecated() {
+  LoginItemSettings settings;
   settings.open_at_login = CheckLoginItemStatus(&settings.open_as_hidden);
   settings.restore_state = base::mac::WasLaunchedAsLoginItemRestoreState();
   settings.opened_at_login = base::mac::WasLaunchedAsLoginOrResumeItem();
@@ -136,13 +137,10 @@ void Browser::Focus(gin::Arguments* args) {
   gin_helper::Dictionary opts;
   bool steal_focus = false;
 
-  if (args->GetNext(&opts)) {
-    gin_helper::ErrorThrower thrower(args->isolate());
-    if (!opts.Get("steal", &steal_focus)) {
-      thrower.ThrowError(
-          "Expected options object to contain a 'steal' boolean property");
-      return;
-    }
+  if (args->GetNext(&opts) && !opts.Get("steal", &steal_focus)) {
+    args->ThrowTypeError(
+        "Expected options object to contain a 'steal' boolean property");
+    return;
   }
 
   [[AtomApplication sharedApplication] activateIgnoringOtherApps:steal_focus];
@@ -161,17 +159,29 @@ void Browser::Show() {
 }
 
 void Browser::AddRecentDocument(const base::FilePath& path) {
-  NSString* path_string = base::apple::FilePathToNSString(path);
-  if (!path_string)
+  NSURL* url = base::apple::FilePathToNSURL(path);
+  if (!url) {
+    LOG(WARNING) << "Failed to convert file path " << path.value()
+                 << " to NSURL";
     return;
-  NSURL* u = [NSURL fileURLWithPath:path_string];
-  if (!u)
-    return;
-  [[NSDocumentController sharedDocumentController] noteNewRecentDocumentURL:u];
+  }
+
+  [[NSDocumentController sharedDocumentController]
+      noteNewRecentDocumentURL:url];
 }
 
 void Browser::ClearRecentDocuments() {
   [[NSDocumentController sharedDocumentController] clearRecentDocuments:nil];
+}
+
+std::vector<std::string> Browser::GetRecentDocuments() {
+  NSArray<NSURL*>* recentURLs =
+      [[NSDocumentController sharedDocumentController] recentDocumentURLs];
+  std::vector<std::string> documents;
+  documents.reserve([recentURLs count]);
+  for (NSURL* url in recentURLs)
+    documents.push_back(std::string([url.path UTF8String]));
+  return documents;
 }
 
 bool Browser::RemoveAsDefaultProtocolClient(const std::string& protocol,
@@ -184,32 +194,40 @@ bool Browser::RemoveAsDefaultProtocolClient(const std::string& protocol,
     return false;
 
   NSString* protocol_ns = [NSString stringWithUTF8String:protocol.c_str()];
-  CFStringRef protocol_cf = base::apple::NSToCFPtrCast(protocol_ns);
-// TODO(codebytere): Use -[NSWorkspace URLForApplicationToOpenURL:] instead
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  CFArrayRef bundleList = LSCopyAllHandlersForURLScheme(protocol_cf);
-#pragma clang diagnostic pop
-  if (!bundleList) {
+  NSURL* protocol_url =
+      [NSURL URLWithString:[protocol_ns stringByAppendingString:@":"]];
+
+  if (!protocol_url)
     return false;
-  }
-  // On macOS, we can't query the default, but the handlers list seems to put
-  // Apple's defaults first, so we'll use the first option that isn't our bundle
-  CFStringRef other = nil;
-  for (CFIndex i = 0; i < CFArrayGetCount(bundleList); ++i) {
-    other =
-        base::apple::CFCast<CFStringRef>(CFArrayGetValueAtIndex(bundleList, i));
-    if (![identifier isEqualToString:(__bridge NSString*)other]) {
+
+  // Get all applications that can handle this URL scheme.
+  NSArray<NSURL*>* app_urls =
+      [[NSWorkspace sharedWorkspace] URLsForApplicationsToOpenURL:protocol_url];
+
+  if (app_urls.count == 0)
+    return false;
+
+  // Find the first application that isn't our bundle.
+  NSString* other_bundle_id = nil;
+  for (NSURL* app_url in app_urls) {
+    NSBundle* app_bundle = [NSBundle bundleWithURL:app_url];
+    NSString* app_identifier = [app_bundle bundleIdentifier];
+
+    if (app_identifier && ![identifier isEqualToString:app_identifier]) {
+      other_bundle_id = app_identifier;
       break;
     }
   }
 
-  // No other app was found set it to none instead of setting it back to itself.
-  if ([identifier isEqualToString:(__bridge NSString*)other]) {
-    other = base::apple::NSToCFPtrCast(@"None");
+  // No other app was found, set it to none instead of setting it back to
+  // itself.
+  if (!other_bundle_id) {
+    other_bundle_id = @"None";
   }
 
-  OSStatus return_code = LSSetDefaultHandlerForURLScheme(protocol_cf, other);
+  OSStatus return_code = LSSetDefaultHandlerForURLScheme(
+      base::apple::NSToCFPtrCast(protocol_ns),
+      base::apple::NSToCFPtrCast(other_bundle_id));
   return return_code == noErr;
 }
 
@@ -239,21 +257,28 @@ bool Browser::IsDefaultProtocolClient(const std::string& protocol,
     return false;
 
   NSString* protocol_ns = [NSString stringWithUTF8String:protocol.c_str()];
+  NSURL* protocol_url =
+      [NSURL URLWithString:[protocol_ns stringByAppendingString:@":"]];
 
-// TODO(codebytere): Use -[NSWorkspace URLForApplicationToOpenURL:] instead
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  base::apple::ScopedCFTypeRef<CFStringRef> bundleId(
-      LSCopyDefaultHandlerForURLScheme(
-          base::apple::NSToCFPtrCast(protocol_ns)));
-#pragma clang diagnostic pop
-  if (!bundleId)
+  if (!protocol_url)
+    return false;
+
+  NSURL* default_app_url =
+      [[NSWorkspace sharedWorkspace] URLForApplicationToOpenURL:protocol_url];
+
+  if (!default_app_url)
+    return false;
+
+  NSBundle* default_app_bundle = [NSBundle bundleWithURL:default_app_url];
+  NSString* default_bundle_id = [default_app_bundle bundleIdentifier];
+
+  if (!default_bundle_id)
     return false;
 
   // Ensure the comparison is case-insensitive
-  // as LS does not persist the case of the bundle id.
-  NSComparisonResult result = [base::apple::CFToNSPtrCast(bundleId.get())
-      caseInsensitiveCompare:identifier];
+  // as bundle IDs should be compared case-insensitively
+  NSComparisonResult result =
+      [default_bundle_id caseInsensitiveCompare:identifier];
   return result == NSOrderedSame;
 }
 
@@ -266,7 +291,7 @@ std::u16string Browser::GetApplicationNameForProtocol(const GURL& url) {
   return app_display_name;
 }
 
-bool Browser::SetBadgeCount(absl::optional<int> count) {
+bool Browser::SetBadgeCount(std::optional<int> count) {
   DockSetBadgeText(!count.has_value() || count.value() != 0
                        ? badging::BadgeManager::GetBadgeString(count)
                        : "");
@@ -279,7 +304,7 @@ bool Browser::SetBadgeCount(absl::optional<int> count) {
 }
 
 void Browser::SetUserActivity(const std::string& type,
-                              base::Value::Dict user_info,
+                              base::DictValue user_info,
                               gin::Arguments* args) {
   std::string url_string;
   args->GetNext(&url_string);
@@ -305,7 +330,7 @@ void Browser::ResignCurrentActivity() {
 }
 
 void Browser::UpdateCurrentActivity(const std::string& type,
-                                    base::Value::Dict user_info) {
+                                    base::DictValue user_info) {
   [[AtomApplication sharedApplication]
       updateCurrentActivity:base::SysUTF8ToNSString(type)
                withUserInfo:DictionaryValueToNSDictionary(
@@ -326,8 +351,8 @@ void Browser::DidFailToContinueUserActivity(const std::string& type,
 }
 
 bool Browser::ContinueUserActivity(const std::string& type,
-                                   base::Value::Dict user_info,
-                                   base::Value::Dict details) {
+                                   base::DictValue user_info,
+                                   base::DictValue details) {
   bool prevent_default = false;
   for (BrowserObserver& observer : observers_)
     observer.OnContinueUserActivity(&prevent_default, type, user_info.Clone(),
@@ -336,13 +361,13 @@ bool Browser::ContinueUserActivity(const std::string& type,
 }
 
 void Browser::UserActivityWasContinued(const std::string& type,
-                                       base::Value::Dict user_info) {
+                                       base::DictValue user_info) {
   for (BrowserObserver& observer : observers_)
     observer.OnUserActivityWasContinued(type, user_info.Clone());
 }
 
 bool Browser::UpdateUserActivityState(const std::string& type,
-                                      base::Value::Dict user_info) {
+                                      base::DictValue user_info) {
   bool prevent_default = false;
   for (BrowserObserver& observer : observers_)
     observer.OnUpdateUserActivityState(&prevent_default, type,
@@ -376,13 +401,15 @@ void Browser::ApplyForcedRTL() {
   }
 }
 
-Browser::LoginItemSettings Browser::GetLoginItemSettings(
+v8::Local<v8::Value> Browser::GetLoginItemSettings(
     const LoginItemSettings& options) {
   LoginItemSettings settings;
+  v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
+
   if (options.type != "mainAppService" && options.service_name.empty()) {
-    gin_helper::ErrorThrower(JavascriptEnvironment::GetIsolate())
-        .ThrowTypeError("'name' is required when type is not mainAppService");
-    return settings;
+    gin_helper::ErrorThrower(isolate).ThrowTypeError(
+        "'name' is required when type is not mainAppService");
+    return v8::Local<v8::Value>();
   }
 
 #if IS_MAS_BUILD()
@@ -390,26 +417,27 @@ Browser::LoginItemSettings Browser::GetLoginItemSettings(
       platform_util::GetLoginItemEnabled(options.type, options.service_name);
   settings.open_at_login =
       status == "enabled" || status == "enabled-deprecated";
+  settings.opened_at_login = was_launched_at_login_;
   if (@available(macOS 13, *))
     settings.status = status;
 #else
   // If the app was previously set as a LoginItem with the deprecated API,
   // we should report its LoginItemSettings via the old API.
-  LoginItemSettings settings_deprecated = GetLoginItemSettingsDeprecated();
   if (@available(macOS 13, *)) {
     const std::string status =
         platform_util::GetLoginItemEnabled(options.type, options.service_name);
     if (status == "enabled-deprecated") {
-      settings = settings_deprecated;
+      settings = GetLoginItemSettingsDeprecated();
     } else {
       settings.open_at_login = status == "enabled";
+      settings.opened_at_login = was_launched_at_login_;
       settings.status = status;
     }
   } else {
-    settings = settings_deprecated;
+    settings = GetLoginItemSettingsDeprecated();
   }
 #endif
-  return settings;
+  return gin::ConvertToV8(isolate, settings);
 }
 
 void Browser::SetLoginItemSettings(LoginItemSettings settings) {
@@ -515,6 +543,9 @@ v8::Local<v8::Promise> Browser::DockShow(v8::Isolate* isolate) {
   gin_helper::Promise<void> promise(isolate);
   v8::Local<v8::Promise> handle = promise.GetHandle();
 
+  for (auto* const& window : WindowList::GetWindows())
+    [window->GetNativeWindow().GetNativeNSWindow() setCanHide:YES];
+
   BOOL active = [[NSRunningApplication currentApplication] isActive];
   ProcessSerialNumber psn = {0, kCurrentProcess};
   if (active) {
@@ -590,7 +621,7 @@ void Browser::ShowAboutPanel() {
       orderFrontStandardAboutPanelWithOptions:options];
 }
 
-void Browser::SetAboutPanelOptions(base::Value::Dict options) {
+void Browser::SetAboutPanelOptions(base::DictValue options) {
   about_panel_options_.clear();
 
   for (const auto pair : options) {

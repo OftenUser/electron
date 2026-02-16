@@ -35,7 +35,9 @@ std::unique_ptr<content::SerialChooser> ElectronSerialDelegate::RunChooser(
   if (controller) {
     DeleteControllerForFrame(frame);
   }
-  AddControllerForFrame(frame, std::move(filters), std::move(callback));
+  AddControllerForFrame(frame, std::move(filters),
+                        std::move(allowed_bluetooth_service_class_ids),
+                        std::move(callback));
 
   // Return a nullptr because the return value isn't used for anything, eg
   // there is no mechanism to cancel navigator.serial.requestPort(). The return
@@ -106,14 +108,15 @@ SerialChooserController* ElectronSerialDelegate::ControllerForFrame(
 SerialChooserController* ElectronSerialDelegate::AddControllerForFrame(
     content::RenderFrameHost* render_frame_host,
     std::vector<blink::mojom::SerialPortFilterPtr> filters,
+    std::vector<device::BluetoothUUID> allowed_bluetooth_service_class_ids,
     content::SerialChooser::Callback callback) {
   auto* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
   auto controller = std::make_unique<SerialChooserController>(
-      render_frame_host, std::move(filters), std::move(callback), web_contents,
-      weak_factory_.GetWeakPtr());
-  controller_map_.insert(
-      std::make_pair(render_frame_host, std::move(controller)));
+      render_frame_host, std::move(filters),
+      std::move(allowed_bluetooth_service_class_ids), std::move(callback),
+      web_contents, weak_factory_.GetWeakPtr());
+  controller_map_.try_emplace(render_frame_host, std::move(controller));
   return ControllerForFrame(render_frame_host);
 }
 
@@ -125,20 +128,19 @@ void ElectronSerialDelegate::DeleteControllerForFrame(
 // SerialChooserContext::PortObserver:
 void ElectronSerialDelegate::OnPortAdded(
     const device::mojom::SerialPortInfo& port) {
-  for (auto& observer : observer_list_)
-    observer.OnPortAdded(port);
+  observer_list_.Notify(&content::SerialDelegate::Observer::OnPortAdded, port);
 }
 
 void ElectronSerialDelegate::OnPortRemoved(
     const device::mojom::SerialPortInfo& port) {
-  for (auto& observer : observer_list_)
-    observer.OnPortRemoved(port);
+  observer_list_.Notify(&content::SerialDelegate::Observer::OnPortRemoved,
+                        port);
 }
 
 void ElectronSerialDelegate::OnPortManagerConnectionError() {
   port_observation_.Reset();
-  for (auto& observer : observer_list_)
-    observer.OnPortManagerConnectionError();
+  observer_list_.Notify(
+      &content::SerialDelegate::Observer::OnPortManagerConnectionError);
 }
 
 void ElectronSerialDelegate::OnSerialChooserContextShutdown() {

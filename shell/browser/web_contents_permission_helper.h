@@ -25,16 +25,6 @@ class WebContentsPermissionHelper
   WebContentsPermissionHelper& operator=(const WebContentsPermissionHelper&) =
       delete;
 
-  enum class PermissionType {
-    POINTER_LOCK = static_cast<int>(blink::PermissionType::NUM) + 1,
-    FULLSCREEN,
-    OPEN_EXTERNAL,
-    SERIAL,
-    HID,
-    USB,
-    KEYBOARD_LOCK
-  };
-
   // Asynchronous Requests
   void RequestFullscreenPermission(content::RenderFrameHost* requesting_frame,
                                    base::OnceCallback<void(bool)> callback);
@@ -69,10 +59,10 @@ class WebContentsPermissionHelper
                          blink::PermissionType permission,
                          base::OnceCallback<void(bool)> callback,
                          bool user_gesture = false,
-                         base::Value::Dict details = {});
+                         base::DictValue details = {});
 
   bool CheckPermission(blink::PermissionType permission,
-                       base::Value::Dict details) const;
+                       base::DictValue details) const;
 
   // TODO(clavin): refactor to use the WebContents provided by the
   // WebContentsUserData base class instead of storing a duplicate ref

@@ -9,23 +9,30 @@
 #include <utility>
 
 #include "base/files/file_util.h"
-#include "base/no_destructor.h"
 #include "base/path_service.h"
-#include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/common/chrome_paths.h"
+#include "gin/arguments.h"
 #include "shell/browser/browser_observer.h"
 #include "shell/browser/electron_browser_main_parts.h"
-#include "shell/browser/login_handler.h"
 #include "shell/browser/native_window.h"
 #include "shell/browser/window_list.h"
 #include "shell/common/application_info.h"
-#include "shell/common/electron_paths.h"
-#include "shell/common/gin_helper/arguments.h"
+#include "shell/common/gin_converters/login_item_settings_converter.h"
 #include "shell/common/thread_restrictions.h"
 
 namespace electron {
+
+LoginItemSettings::LoginItemSettings() = default;
+LoginItemSettings::~LoginItemSettings() = default;
+LoginItemSettings::LoginItemSettings(const LoginItemSettings& other) = default;
+
+#if BUILDFLAG(IS_WIN)
+LaunchItem::LaunchItem() = default;
+LaunchItem::~LaunchItem() = default;
+LaunchItem::LaunchItem(const LaunchItem& other) = default;
+#endif
 
 namespace {
 
@@ -43,23 +50,20 @@ void RunQuitClosure(base::OnceClosure quit) {
 
 }  // namespace
 
-#if BUILDFLAG(IS_WIN)
-Browser::LaunchItem::LaunchItem() = default;
-Browser::LaunchItem::~LaunchItem() = default;
-Browser::LaunchItem::LaunchItem(const LaunchItem& other) = default;
-#endif
-
-Browser::LoginItemSettings::LoginItemSettings() = default;
-Browser::LoginItemSettings::~LoginItemSettings() = default;
-Browser::LoginItemSettings::LoginItemSettings(const LoginItemSettings& other) =
-    default;
-
 Browser::Browser() {
   WindowList::AddObserver(this);
 }
 
 Browser::~Browser() {
   WindowList::RemoveObserver(this);
+}
+
+void Browser::AddObserver(BrowserObserver* obs) {
+  observers_.AddObserver(obs);
+}
+
+void Browser::RemoveObserver(BrowserObserver* obs) {
+  observers_.RemoveObserver(obs);
 }
 
 // static
@@ -125,8 +129,7 @@ void Browser::Shutdown() {
   is_shutdown_ = true;
   is_quitting_ = true;
 
-  for (BrowserObserver& observer : observers_)
-    observer.OnQuit();
+  observers_.Notify(&BrowserObserver::OnQuit);
 
   if (quit_main_message_loop_) {
     RunQuitClosure(std::move(quit_main_message_loop_));
@@ -159,34 +162,25 @@ void Browser::SetName(const std::string& name) {
   OverriddenApplicationName() = name;
 }
 
-int Browser::GetBadgeCount() {
-  return badge_count_;
-}
-
 bool Browser::OpenFile(const std::string& file_path) {
   bool prevent_default = false;
-  for (BrowserObserver& observer : observers_)
-    observer.OnOpenFile(&prevent_default, file_path);
-
+  observers_.Notify(&BrowserObserver::OnOpenFile, &prevent_default, file_path);
   return prevent_default;
 }
 
 void Browser::OpenURL(const std::string& url) {
-  for (BrowserObserver& observer : observers_)
-    observer.OnOpenURL(url);
+  observers_.Notify(&BrowserObserver::OnOpenURL, url);
 }
 
 void Browser::Activate(bool has_visible_windows) {
-  for (BrowserObserver& observer : observers_)
-    observer.OnActivate(has_visible_windows);
+  observers_.Notify(&BrowserObserver::OnActivate, has_visible_windows);
 }
 
 void Browser::WillFinishLaunching() {
-  for (BrowserObserver& observer : observers_)
-    observer.OnWillFinishLaunching();
+  observers_.Notify(&BrowserObserver::OnWillFinishLaunching);
 }
 
-void Browser::DidFinishLaunching(base::Value::Dict launch_info) {
+void Browser::DidFinishLaunching(base::DictValue launch_info) {
   // Make sure the userData directory is created.
   ScopedAllowBlockingForElectron allow_blocking;
   base::FilePath user_data;
@@ -198,9 +192,9 @@ void Browser::DidFinishLaunching(base::Value::Dict launch_info) {
   }
 
   is_ready_ = true;
-  if (ready_promise_) {
+  if (ready_promise_)
     ready_promise_->Resolve();
-  }
+
   for (BrowserObserver& observer : observers_)
     observer.OnFinishLaunching(launch_info.Clone());
 }
@@ -216,20 +210,15 @@ v8::Local<v8::Value> Browser::WhenReady(v8::Isolate* isolate) {
 }
 
 void Browser::OnAccessibilitySupportChanged() {
-  for (BrowserObserver& observer : observers_)
-    observer.OnAccessibilitySupportChanged();
+  observers_.Notify(&BrowserObserver::OnAccessibilitySupportChanged);
 }
 
 void Browser::PreMainMessageLoopRun() {
-  for (BrowserObserver& observer : observers_) {
-    observer.OnPreMainMessageLoopRun();
-  }
+  observers_.Notify(&BrowserObserver::OnPreMainMessageLoopRun);
 }
 
 void Browser::PreCreateThreads() {
-  for (BrowserObserver& observer : observers_) {
-    observer.OnPreCreateThreads();
-  }
+  observers_.Notify(&BrowserObserver::OnPreCreateThreads);
 }
 
 void Browser::SetMainMessageLoopQuitClosure(base::OnceClosure quit_closure) {
@@ -244,9 +233,7 @@ void Browser::NotifyAndShutdown() {
     return;
 
   bool prevent_default = false;
-  for (BrowserObserver& observer : observers_)
-    observer.OnWillQuit(&prevent_default);
-
+  observers_.Notify(&BrowserObserver::OnWillQuit, &prevent_default);
   if (prevent_default) {
     is_quitting_ = false;
     return;
@@ -257,9 +244,7 @@ void Browser::NotifyAndShutdown() {
 
 bool Browser::HandleBeforeQuit() {
   bool prevent_default = false;
-  for (BrowserObserver& observer : observers_)
-    observer.OnBeforeQuit(&prevent_default);
-
+  observers_.Notify(&BrowserObserver::OnBeforeQuit, &prevent_default);
   return !prevent_default;
 }
 
@@ -276,25 +261,21 @@ void Browser::OnWindowAllClosed() {
   } else if (is_quitting_) {
     NotifyAndShutdown();
   } else {
-    for (BrowserObserver& observer : observers_)
-      observer.OnWindowAllClosed();
+    observers_.Notify(&BrowserObserver::OnWindowAllClosed);
   }
 }
 
 #if BUILDFLAG(IS_MAC)
 void Browser::NewWindowForTab() {
-  for (BrowserObserver& observer : observers_)
-    observer.OnNewWindowForTab();
+  observers_.Notify(&BrowserObserver::OnNewWindowForTab);
 }
 
 void Browser::DidBecomeActive() {
-  for (BrowserObserver& observer : observers_)
-    observer.OnDidBecomeActive();
+  observers_.Notify(&BrowserObserver::OnDidBecomeActive);
 }
 
 void Browser::DidResignActive() {
-  for (BrowserObserver& observer : observers_)
-    observer.OnDidResignActive();
+  observers_.Notify(&BrowserObserver::OnDidResignActive);
 }
 #endif
 

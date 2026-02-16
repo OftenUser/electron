@@ -6,22 +6,16 @@ Subject: fix: select the first menu item when opened via keyboard
 This fixes an accessibility issue where the root view is 'focused' to the screen reader instead of the first menu item as with all other native menus. This patch will be upstreamed.
 
 diff --git a/ui/views/controls/menu/menu_controller.cc b/ui/views/controls/menu/menu_controller.cc
-index 896190761b3b2d89eed135730f2bc23191f4a396..d15d5ac6f352a946d3bb6770dc66a8745ceb413e 100644
+index f84caf2bba616b52ae572f0195c02baa2e05d21e..2e2e3df20b1fa8acbf859300f3de3e24b5cf5efd 100644
 --- a/ui/views/controls/menu/menu_controller.cc
 +++ b/ui/views/controls/menu/menu_controller.cc
-@@ -566,6 +566,7 @@ void MenuController::Run(Widget* parent,
-                          MenuAnchorPosition position,
-                          bool context_menu,
-                          bool is_nested_drag,
-+                         ui::MenuSourceType source_type,
-                          gfx::NativeView native_view_for_gestures) {
-   exit_type_ = ExitType::kNone;
-   possible_drag_ = false;
-@@ -630,6 +631,14 @@ void MenuController::Run(Widget* parent,
-   // Set the selection, which opens the initial menu.
-   SetSelection(root, SELECTION_OPEN_SUBMENU | SELECTION_UPDATE_IMMEDIATELY);
+@@ -724,6 +724,16 @@ void MenuController::Run(Widget* parent,
+     SetSelection(root, SELECTION_OPEN_SUBMENU | SELECTION_UPDATE_IMMEDIATELY);
+   }
  
-+  if (source_type == ui::MENU_SOURCE_KEYBOARD && context_menu && root->HasSubmenu()) {
++  if (source_type == ui::mojom::MenuSourceType::kKeyboard &&
++      (menu_type == MenuType::kContextMenu || menu_type == MenuType::kMenuItemContextMenu) &&
++      root->HasSubmenu()) {
 +    // For context menus opened via the keyboard we select the first item by default
 +    // to match accessibility expectations
 +    MenuItemView* first_item = FindInitialSelectableMenuItem(root, INCREMENT_SELECTION_DOWN);
@@ -32,7 +26,7 @@ index 896190761b3b2d89eed135730f2bc23191f4a396..d15d5ac6f352a946d3bb6770dc66a874
    if (button_controller) {
      pressed_lock_ = button_controller->TakeLock(
          false, ui::LocatedEvent::FromIfValid(event));
-@@ -2257,19 +2266,15 @@ void MenuController::OpenMenuImpl(MenuItemView* item, bool show) {
+@@ -2523,18 +2533,15 @@ void MenuController::OpenMenuImpl(MenuItemView* item, bool show) {
      }
      item->GetSubmenu()->ShowAt(params);
  
@@ -45,139 +39,16 @@ index 896190761b3b2d89eed135730f2bc23191f4a396..d15d5ac6f352a946d3bb6770dc66a874
 +    // `ConvertFromScreen` doesn't work correctly if the widget isn't shown.
      if (item->GetSubmenu()->GetWidget()) {
        const gfx::Point mouse_pos = ConvertFromScreen(
-           *item->submenu_,
-           display::Screen::GetScreen()->GetCursorScreenPoint());
+-          *item->submenu_, display::Screen::Get()->GetCursorScreenPoint());
 -      MenuPart part_under_mouse = GetMenuPart(item->submenu_.get(), mouse_pos);
 -      if (part_under_mouse.type != MenuPartType::kNone) {
 -        menu_open_mouse_loc_ =
 -            GetLocationInRootMenu(*item->submenu_, mouse_pos);
 -      }
++          *item->submenu_,
++          display::Screen::Get()->GetCursorScreenPoint());
 +      menu_open_mouse_loc_ =
 +          GetLocationInRootMenu(*item->submenu_, mouse_pos);
      }
  
      item->GetSubmenu()->GetWidget()->SetNativeWindowProperty(
-diff --git a/ui/views/controls/menu/menu_controller.h b/ui/views/controls/menu/menu_controller.h
-index 55d0bb090d22149aa045515dac874b909fa18f34..7a66ddf13786a88eb19aad346c6588e042511ad3 100644
---- a/ui/views/controls/menu/menu_controller.h
-+++ b/ui/views/controls/menu/menu_controller.h
-@@ -139,6 +139,7 @@ class VIEWS_EXPORT MenuController
-            MenuAnchorPosition position,
-            bool context_menu,
-            bool is_nested_drag,
-+           ui::MenuSourceType source_type,
-            gfx::NativeView native_view_for_gestures = gfx::NativeView());
- 
-   bool for_drop() const { return for_drop_; }
-diff --git a/ui/views/controls/menu/menu_runner.cc b/ui/views/controls/menu/menu_runner.cc
-index d2d1ac027cfca476f3bf6cd5829bba6035547a27..237ea71f27308014a19ce9fc018b3d2760e9e8ea 100644
---- a/ui/views/controls/menu/menu_runner.cc
-+++ b/ui/views/controls/menu/menu_runner.cc
-@@ -89,7 +89,7 @@ void MenuRunner::RunMenuAt(
-   }
- 
-   impl_->RunMenuAt(parent, button_controller, bounds, anchor, run_types_,
--                   native_view_for_gestures, corners,
-+                   source_type, native_view_for_gestures, corners,
-                    std::move(show_menu_host_duration_histogram));
- }
- 
-diff --git a/ui/views/controls/menu/menu_runner_impl.cc b/ui/views/controls/menu/menu_runner_impl.cc
-index 8100d5e1b4a44783d8d26e86600c0b20e9cc6bd2..0dc9adbab1e980bd1c6dda49cfd6d40ecf6a1459 100644
---- a/ui/views/controls/menu/menu_runner_impl.cc
-+++ b/ui/views/controls/menu/menu_runner_impl.cc
-@@ -115,6 +115,7 @@ void MenuRunnerImpl::RunMenuAt(
-     const gfx::Rect& bounds,
-     MenuAnchorPosition anchor,
-     int32_t run_types,
-+    ui::MenuSourceType source_type,
-     gfx::NativeView native_view_for_gestures,
-     absl::optional<gfx::RoundedCornersF> corners,
-     absl::optional<std::string> show_menu_host_duration_histogram) {
-@@ -189,7 +190,7 @@ void MenuRunnerImpl::RunMenuAt(
-   controller->Run(parent, button_controller, menu_.get(), bounds, anchor,
-                   (run_types & MenuRunner::CONTEXT_MENU) != 0,
-                   (run_types & MenuRunner::NESTED_DRAG) != 0,
--                  native_view_for_gestures);
-+                  source_type, native_view_for_gestures);
- }
- 
- void MenuRunnerImpl::Cancel() {
-diff --git a/ui/views/controls/menu/menu_runner_impl.h b/ui/views/controls/menu/menu_runner_impl.h
-index 9b2ac3f475acc009d85eee9eb19c230d72ea708b..00ca9b558f08924110b8cb20d205539d6329deff 100644
---- a/ui/views/controls/menu/menu_runner_impl.h
-+++ b/ui/views/controls/menu/menu_runner_impl.h
-@@ -52,6 +52,7 @@ class VIEWS_EXPORT MenuRunnerImpl : public MenuRunnerImplInterface,
-                  const gfx::Rect& bounds,
-                  MenuAnchorPosition anchor,
-                  int32_t run_types,
-+                 ui::MenuSourceType source_type,
-                  gfx::NativeView native_view_for_gestures,
-                  absl::optional<gfx::RoundedCornersF> corners = absl::nullopt,
-                  absl::optional<std::string> show_menu_host_duration_histogram =
-diff --git a/ui/views/controls/menu/menu_runner_impl_adapter.cc b/ui/views/controls/menu/menu_runner_impl_adapter.cc
-index 8ba01786963e4db87696030a629cc4d84dda8e4a..674dbe7d33bad0c8796c38c59ee0e4f07855170a 100644
---- a/ui/views/controls/menu/menu_runner_impl_adapter.cc
-+++ b/ui/views/controls/menu/menu_runner_impl_adapter.cc
-@@ -35,11 +35,12 @@ void MenuRunnerImplAdapter::RunMenuAt(
-     const gfx::Rect& bounds,
-     MenuAnchorPosition anchor,
-     int32_t types,
-+    ui::MenuSourceType source_type,
-     gfx::NativeView native_view_for_gestures,
-     absl::optional<gfx::RoundedCornersF> corners,
-     absl::optional<std::string> show_menu_host_duration_histogram) {
-   impl_->RunMenuAt(parent, button_controller, bounds, anchor, types,
--                   native_view_for_gestures);
-+                   source_type, native_view_for_gestures);
- }
- 
- void MenuRunnerImplAdapter::Cancel() {
-diff --git a/ui/views/controls/menu/menu_runner_impl_adapter.h b/ui/views/controls/menu/menu_runner_impl_adapter.h
-index 8b2e1065dc9e989f7f3a7dbb9375c2d3b2abce7c..e34774c7b2f4c311ef0a7c804afffddcf22196f1 100644
---- a/ui/views/controls/menu/menu_runner_impl_adapter.h
-+++ b/ui/views/controls/menu/menu_runner_impl_adapter.h
-@@ -43,6 +43,7 @@ class VIEWS_EXPORT MenuRunnerImplAdapter : public MenuRunnerImplInterface {
-                  const gfx::Rect& bounds,
-                  MenuAnchorPosition anchor,
-                  int32_t types,
-+                 ui::MenuSourceType source_type,
-                  gfx::NativeView native_view_for_gestures,
-                  absl::optional<gfx::RoundedCornersF> corners = absl::nullopt,
-                  absl::optional<std::string> show_menu_host_duration_histogram =
-diff --git a/ui/views/controls/menu/menu_runner_impl_cocoa.h b/ui/views/controls/menu/menu_runner_impl_cocoa.h
-index 0d920c6857f8a01b3595f745f2ed183672630d16..f78104e2d3d8ea91a2c9ceb5a35e721b4e7af619 100644
---- a/ui/views/controls/menu/menu_runner_impl_cocoa.h
-+++ b/ui/views/controls/menu/menu_runner_impl_cocoa.h
-@@ -41,6 +41,7 @@ class VIEWS_EXPORT MenuRunnerImplCocoa : public MenuRunnerImplInterface {
-                  const gfx::Rect& bounds,
-                  MenuAnchorPosition anchor,
-                  int32_t run_types,
-+                 ui::MenuSourceType source_type,
-                  gfx::NativeView native_view_for_gestures,
-                  absl::optional<gfx::RoundedCornersF> corners = absl::nullopt,
-                  absl::optional<std::string> show_menu_host_duration_histogram =
-diff --git a/ui/views/controls/menu/menu_runner_impl_cocoa.mm b/ui/views/controls/menu/menu_runner_impl_cocoa.mm
-index c7b2c7ae0bd9b64af289a9c69995736acd84747b..ee846937d24436d3b31f0b1473558e83eaf9bbb1 100644
---- a/ui/views/controls/menu/menu_runner_impl_cocoa.mm
-+++ b/ui/views/controls/menu/menu_runner_impl_cocoa.mm
-@@ -189,6 +189,7 @@
-     const gfx::Rect& bounds,
-     MenuAnchorPosition anchor,
-     int32_t run_types,
-+    ui::MenuSourceType source_type,
-     gfx::NativeView native_view_for_gestures,
-     absl::optional<gfx::RoundedCornersF> corners,
-     absl::optional<std::string> show_menu_host_duration_histogram) {
-diff --git a/ui/views/controls/menu/menu_runner_impl_interface.h b/ui/views/controls/menu/menu_runner_impl_interface.h
-index 5db5ddfec3c1f9f0e576c8897a7e084cc0b7e358..76e4cdca46b2519baea74a7dcae8f5fbca93f930 100644
---- a/ui/views/controls/menu/menu_runner_impl_interface.h
-+++ b/ui/views/controls/menu/menu_runner_impl_interface.h
-@@ -46,6 +46,7 @@ class MenuRunnerImplInterface {
-       const gfx::Rect& bounds,
-       MenuAnchorPosition anchor,
-       int32_t run_types,
-+      ui::MenuSourceType source_type,
-       gfx::NativeView native_view_for_gestures,
-       absl::optional<gfx::RoundedCornersF> corners = absl::nullopt,
-       absl::optional<std::string> show_menu_host_duration_histogram =

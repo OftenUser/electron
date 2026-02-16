@@ -7,28 +7,22 @@
 #include <gdk/gdk.h>
 #include <gtk/gtk.h>
 
-#include <map>
 #include <string>
 
+#include "base/containers/flat_map.h"
+#include "base/notimplemented.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "shell/browser/linux/x11_util.h"
 #include "shell/browser/ui/gtk_util.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "third_party/skia/include/core/SkUnPreMultiply.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/accelerators/menu_label_accelerator_util_linux.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
-
-#if defined(USE_OZONE)
-#include "ui/ozone/buildflags.h"
-#if BUILDFLAG(OZONE_PLATFORM_X11)
-#define USE_OZONE_PLATFORM_X11
-#endif
 #include "ui/ozone/public/ozone_platform.h"
-#endif
 
 namespace electron::gtkui {
 
@@ -46,8 +40,6 @@ int EventFlagsFromGdkState(guint state) {
   flags |= (state & GDK_BUTTON3_MASK) ? ui::EF_RIGHT_MOUSE_BUTTON : ui::EF_NONE;
   return flags;
 }
-
-#if defined(USE_OZONE_PLATFORM_X11)
 
 guint GetGdkKeyCodeForAccelerator(const ui::Accelerator& accelerator) {
   // The second parameter is false because accelerator keys are expressed in
@@ -68,31 +60,23 @@ GdkModifierType GetGdkModifierForAccelerator(
   return static_cast<GdkModifierType>(modifier);
 }
 
-#endif
-
 }  // namespace
 
-GtkWidget* BuildMenuItemWithImage(const std::string& label, GtkWidget* image) {
-// GTK4 removed support for image menu items.
+GtkWidget* BuildMenuItemWithImage(const std::string& label,
+                                  const gfx::Image& icon) {
+// GTK4 removed support for menuitem icons.
 #if GTK_CHECK_VERSION(3, 90, 0)
   return gtk_menu_item_new_with_mnemonic(label.c_str());
 #else
   G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
   GtkWidget* menu_item = gtk_image_menu_item_new_with_mnemonic(label.c_str());
+  GdkPixbuf* pixbuf = gtk_util::GdkPixbufFromSkBitmap(*icon.ToSkBitmap());
+  GtkWidget* image = gtk_image_new_from_pixbuf(pixbuf);
   gtk_image_menu_item_set_image(GTK_IMAGE_MENU_ITEM(menu_item), image);
+  g_object_unref(pixbuf);
   G_GNUC_END_IGNORE_DEPRECATIONS;
   return menu_item;
 #endif
-}
-
-GtkWidget* BuildMenuItemWithImage(const std::string& label,
-                                  const gfx::Image& icon) {
-  GdkPixbuf* pixbuf = gtk_util::GdkPixbufFromSkBitmap(*icon.ToSkBitmap());
-
-  GtkWidget* menu_item =
-      BuildMenuItemWithImage(label, gtk_image_new_from_pixbuf(pixbuf));
-  g_object_unref(pixbuf);
-  return menu_item;
 }
 
 GtkWidget* BuildMenuItemWithLabel(const std::string& label) {
@@ -161,7 +145,7 @@ void BuildSubmenuFromModel(ui::MenuModel* model,
                            MenuActivatedCallback item_activated_cb,
                            bool* block_activation,
                            std::vector<ScopedGSignal>* signals) {
-  std::map<int, GtkWidget*> radio_groups;
+  base::flat_map<int, GtkWidget*> radio_groups;
   GtkWidget* menu_item = nullptr;
   for (size_t i = 0; i < model->GetItemCount(); ++i) {
     std::string label = ui::ConvertAcceleratorsFromWindowsStyle(
@@ -231,10 +215,7 @@ void BuildSubmenuFromModel(ui::MenuModel* model,
       connect_to_activate = false;
     }
 
-#if defined(USE_OZONE_PLATFORM_X11)
-    if (ui::OzonePlatform::GetInstance()
-            ->GetPlatformProperties()
-            .electron_can_call_x11) {
+    if (x11_util::IsX11()) {
       ui::Accelerator accelerator;
       if (model->GetAcceleratorAt(i, &accelerator)) {
         gtk_widget_add_accelerator(menu_item, "activate", nullptr,
@@ -243,7 +224,6 @@ void BuildSubmenuFromModel(ui::MenuModel* model,
                                    GTK_ACCEL_VISIBLE);
       }
     }
-#endif
 
     g_object_set_data(G_OBJECT(menu_item), "model", model);
     AppendMenuItemToMenu(i, model, menu_item, menu, connect_to_activate,

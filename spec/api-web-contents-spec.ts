@@ -1,17 +1,21 @@
-import { expect } from 'chai';
-import { AddressInfo } from 'node:net';
-import * as path from 'node:path';
+import { BrowserWindow, ipcMain, webContents, session, app, BrowserView, WebContents, BaseWindow, WebContentsView } from 'electron/main';
+
+import { assert, expect } from 'chai';
+
+import * as cp from 'node:child_process';
+import { once } from 'node:events';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
-import { BrowserWindow, ipcMain, webContents, session, app, BrowserView, WebContents } from 'electron/main';
-import { closeAllWindows } from './lib/window-helpers';
-import { ifdescribe, defer, waitUntil, listen, ifit } from './lib/spec-helpers';
-import { once } from 'node:events';
+import { AddressInfo } from 'node:net';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { setTimeout } from 'node:timers/promises';
+import * as url from 'node:url';
 
-const pdfjs = require('pdfjs-dist');
+import { ifdescribe, defer, waitUntil, listen, ifit } from './lib/spec-helpers';
+import { cleanupWebContents, closeAllWindows } from './lib/window-helpers';
+
 const fixturesPath = path.resolve(__dirname, 'fixtures');
-const mainFixturesPath = path.resolve(__dirname, 'fixtures');
 const features = process._linkedBinding('electron_common_features');
 
 describe('webContents module', () => {
@@ -41,6 +45,17 @@ describe('webContents module', () => {
     });
   });
 
+  describe('webContents properties', () => {
+    afterEach(closeAllWindows);
+
+    it('has expected additional enumerable properties', () => {
+      const w = new BrowserWindow({ show: false });
+      const properties = Object.getOwnPropertyNames(w.webContents);
+      expect(properties).to.include('ipc');
+      expect(properties).to.include('navigationHistory');
+    });
+  });
+
   describe('fromId()', () => {
     it('returns undefined for an unknown id', () => {
       expect(webContents.fromId(12345)).to.be.undefined();
@@ -48,6 +63,7 @@ describe('webContents module', () => {
   });
 
   describe('fromFrame()', () => {
+    afterEach(cleanupWebContents);
     it('returns WebContents for mainFrame', () => {
       const contents = (webContents as typeof ElectronInternal.WebContents).create();
       expect(webContents.fromFrame(contents.mainFrame)).to.equal(contents);
@@ -70,6 +86,7 @@ describe('webContents module', () => {
   });
 
   describe('fromDevToolsTargetId()', () => {
+    afterEach(closeAllWindows);
     it('returns WebContents for attached DevTools target', async () => {
       const w = new BrowserWindow({ show: false });
       await w.loadURL('about:blank');
@@ -88,7 +105,11 @@ describe('webContents module', () => {
   });
 
   describe('will-prevent-unload event', function () {
-    afterEach(closeAllWindows);
+    afterEach(async () => {
+      await closeAllWindows();
+      await cleanupWebContents();
+    });
+
     it('does not emit if beforeunload returns undefined in a BrowserWindow', async () => {
       const w = new BrowserWindow({ show: false });
       w.webContents.once('will-prevent-unload', () => {
@@ -142,6 +163,35 @@ describe('webContents module', () => {
       w.close();
       await wait;
     });
+
+    it('fails loading a subsequent page after beforeunload is not prevented', async () => {
+      const w = new BrowserWindow({ show: false });
+
+      const didFailLoad = once(w.webContents, 'did-fail-load');
+      await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'beforeunload-false.html'));
+      await w.webContents.executeJavaScript('console.log(\'gesture\')', true);
+
+      w.loadFile(path.join(__dirname, 'fixtures', 'pages', 'a.html'));
+      const [, code, , validatedURL] = await didFailLoad;
+      expect(code).to.equal(-3); // ERR_ABORTED
+      const { href: expectedURL } = url.pathToFileURL(path.join(__dirname, 'fixtures', 'pages', 'a.html'));
+      expect(validatedURL).to.equal(expectedURL);
+    });
+
+    it('allows loading a subsequent page after beforeunload is prevented', async () => {
+      const w = new BrowserWindow({ show: false });
+      w.webContents.once('will-prevent-unload', event => event.preventDefault());
+
+      await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'beforeunload-false.html'));
+      await w.webContents.executeJavaScript('console.log(\'gesture\')', true);
+      await w.loadFile(path.join(__dirname, 'fixtures', 'pages', 'a.html'));
+      const pageTitle = await w.webContents.executeJavaScript('document.title');
+      expect(pageTitle).to.equal('test');
+
+      const wait = once(w, 'closed');
+      w.close();
+      await wait;
+    });
   });
 
   describe('webContents.send(channel, args...)', () => {
@@ -187,10 +237,31 @@ describe('webContents module', () => {
 
     afterEach(closeAllWindows);
 
+    it('does not throw when options are not passed', () => {
+      expect(() => {
+        w.webContents.print();
+      }).not.to.throw();
+
+      expect(() => {
+        w.webContents.print(undefined);
+      }).not.to.throw();
+    });
+
+    it('does not throw when options object is empty', () => {
+      expect(() => {
+        w.webContents.print({});
+      }).not.to.throw();
+    });
+
     it('throws when invalid settings are passed', () => {
       expect(() => {
         // @ts-ignore this line is intentionally incorrect
         w.webContents.print(true);
+      }).to.throw('webContents.print(): Invalid print settings specified.');
+
+      expect(() => {
+        // @ts-ignore this line is intentionally incorrect
+        w.webContents.print(null);
       }).to.throw('webContents.print(): Invalid print settings specified.');
     });
 
@@ -200,6 +271,12 @@ describe('webContents module', () => {
         // @ts-ignore this line is intentionally incorrect
         w.webContents.print({ pageSize: badSize });
       }).to.throw(`Unsupported pageSize: ${badSize}`);
+    });
+
+    it('throws when a user passes both pageSize and usePrinterDefaultPageSize', () => {
+      expect(() => {
+        w.webContents.print({ pageSize: 'A4', usePrinterDefaultPageSize: true });
+      }).to.throw('usePrinterDefaultPageSize cannot be combined with pageSize');
     });
 
     it('throws when an invalid callback is passed', () => {
@@ -269,11 +346,13 @@ describe('webContents module', () => {
       ]);
       let w: BrowserWindow;
 
-      before(async () => {
+      beforeEach(async () => {
         w = new BrowserWindow({ show: false, webPreferences: { contextIsolation: false } });
         await w.loadURL('about:blank');
       });
-      after(closeAllWindows);
+      afterEach(async () => {
+        await closeAllWindows();
+      });
 
       it('resolves the returned promise with the result', async () => {
         const result = await w.webContents.executeJavaScript(code);
@@ -344,6 +423,8 @@ describe('webContents module', () => {
       await w.loadURL('about:blank');
     });
 
+    after(() => w.close());
+
     it('resolves the returned promise with the result', async () => {
       await w.webContents.executeJavaScriptInIsolatedWorld(999, [{ code: 'window.X = 123' }]);
       const isolatedResult = await w.webContents.executeJavaScriptInIsolatedWorld(999, [{ code: 'window.X' }]);
@@ -355,11 +436,37 @@ describe('webContents module', () => {
 
   describe('loadURL() promise API', () => {
     let w: BrowserWindow;
+    let s: http.Server;
+
+    before(function () {
+      session.fromPartition('loadurl-webcontents-spec').setPermissionRequestHandler((webContents, permission, callback) => {
+        if (permission === 'openExternal') {
+          return callback(false);
+        }
+        callback(true);
+      });
+    });
+
+    afterEach(() => {
+      if (s) {
+        s.close();
+        s = null as unknown as http.Server;
+      }
+    });
 
     beforeEach(async () => {
-      w = new BrowserWindow({ show: false });
+      w = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          partition: 'loadurl-webcontents-spec'
+        }
+      });
     });
     afterEach(closeAllWindows);
+
+    after(async () => {
+      session.fromPartition('loadurl-webcontents-spec').setPermissionRequestHandler(null);
+    });
 
     it('resolves when done loading', async () => {
       await expect(w.loadURL('about:blank')).to.eventually.be.fulfilled();
@@ -431,7 +538,7 @@ describe('webContents module', () => {
       }
     });
 
-    it('fails if loadURL is called inside a non-reentrant critical section', (done) => {
+    it('fails if loadURL is called inside did-start-loading', (done) => {
       w.webContents.once('did-fail-load', (_event, _errorCode, _errorDescription, validatedURL) => {
         expect(validatedURL).to.contain('blank.html');
         done();
@@ -442,6 +549,49 @@ describe('webContents module', () => {
       });
 
       w.loadURL('data:text/html,<h1>HELLO</h1>');
+    });
+
+    it('fails if loadurl is called after the navigation is ready to commit', () => {
+      w.webContents.once('did-fail-load', (_event, _errorCode, _errorDescription, validatedURL) => {
+        expect(validatedURL).to.contain('blank.html');
+      });
+
+      // @ts-expect-error internal-only event.
+      w.webContents.once('-ready-to-commit-navigation', () => {
+        w.loadURL(`file://${fixturesPath}/pages/blank.html`);
+      });
+
+      w.loadURL('data:text/html,<h1>HELLO</h1>');
+    });
+
+    it('fails if loadURL is called inside did-redirect-navigation', (done) => {
+      const server = http.createServer((req, res) => {
+        if (req.url === '/302') {
+          res.statusCode = 302;
+          res.setHeader('Location', '/200');
+          res.end();
+        } else if (req.url === '/200') {
+          res.end('ok');
+        } else {
+          res.end();
+        }
+      });
+
+      w.webContents.once('did-fail-load', (_event, _errorCode, _errorDescription, validatedURL) => {
+        expect(validatedURL).to.contain('blank.html');
+        server.close();
+        done();
+      });
+
+      listen(server).then(({ url }) => {
+        w.webContents.once('did-redirect-navigation', () => {
+          w.loadURL(`file://${fixturesPath}/pages/blank.html`);
+        });
+        w.loadURL(`${url}/302`);
+      }).catch(e => {
+        server.close();
+        done(e);
+      });
     });
 
     it('sets appropriate error information on rejection', async () => {
@@ -458,19 +608,18 @@ describe('webContents module', () => {
     });
 
     it('rejects if the load is aborted', async () => {
-      const s = http.createServer(() => { /* never complete the request */ });
+      s = http.createServer(() => { /* never complete the request */ });
       const { port } = await listen(s);
       const p = expect(w.loadURL(`http://127.0.0.1:${port}`)).to.eventually.be.rejectedWith(Error, /ERR_ABORTED/);
       // load a different file before the first load completes, causing the
       // first load to be aborted.
       await w.loadFile(path.join(fixturesPath, 'pages', 'base-page.html'));
       await p;
-      s.close();
     });
 
     it("doesn't reject when a subframe fails to load", async () => {
       let resp = null as unknown as http.ServerResponse;
-      const s = http.createServer((req, res) => {
+      s = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.write('<iframe src="http://err.name.not.resolved"></iframe>');
         resp = res;
@@ -488,12 +637,11 @@ describe('webContents module', () => {
       await p;
       resp.end();
       await main;
-      s.close();
     });
 
     it("doesn't resolve when a subframe loads", async () => {
       let resp = null as unknown as http.ServerResponse;
-      const s = http.createServer((req, res) => {
+      s = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.write('<iframe src="about:blank"></iframe>');
         resp = res;
@@ -512,12 +660,354 @@ describe('webContents module', () => {
       resp.destroy(); // cause the main request to fail
       await expect(main).to.eventually.be.rejected()
         .and.have.property('errno', -355); // ERR_INCOMPLETE_CHUNKED_ENCODING
-      s.close();
     });
 
     it('subsequent load failures reject each time', async () => {
       await expect(w.loadURL('file:non-existent')).to.eventually.be.rejected();
       await expect(w.loadURL('file:non-existent')).to.eventually.be.rejected();
+    });
+
+    it('invalid URL load rejects', async () => {
+      await expect(w.loadURL('invalidURL')).to.eventually.be.rejected();
+    });
+  });
+
+  describe('navigationHistory', () => {
+    let w: BrowserWindow;
+    const urlPage1 = 'data:text/html,<html><head><script>document.title = "Page 1";</script></head><body></body></html>';
+    const urlPage2 = 'data:text/html,<html><head><script>document.title = "Page 2";</script></head><body></body></html>';
+    const urlPage3 = 'data:text/html,<html><head><script>document.title = "Page 3";</script></head><body></body></html>';
+
+    beforeEach(async () => {
+      w = new BrowserWindow({ show: false });
+    });
+    afterEach(closeAllWindows);
+    describe('navigationHistory.removeEntryAtIndex(index) API', () => {
+      it('should remove a navigation entry given a valid index', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+        const initialLength = w.webContents.navigationHistory.length();
+        const wasRemoved = w.webContents.navigationHistory.removeEntryAtIndex(1); // Attempt to remove the second entry
+        const newLength = w.webContents.navigationHistory.length();
+        expect(wasRemoved).to.be.true();
+        expect(newLength).to.equal(initialLength - 1);
+      });
+
+      it('should not remove the current active navigation entry', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        const activeIndex = w.webContents.navigationHistory.getActiveIndex();
+        const wasRemoved = w.webContents.navigationHistory.removeEntryAtIndex(activeIndex);
+        expect(wasRemoved).to.be.false();
+      });
+
+      it('should return false given an invalid index larger than history length', async () => {
+        await w.loadURL(urlPage1);
+        const wasRemoved = w.webContents.navigationHistory.removeEntryAtIndex(5); // Index larger than history length
+        expect(wasRemoved).to.be.false();
+      });
+
+      it('should return false given an invalid negative index', async () => {
+        await w.loadURL(urlPage1);
+        const wasRemoved = w.webContents.navigationHistory.removeEntryAtIndex(-1); // Negative index
+        expect(wasRemoved).to.be.false();
+      });
+    });
+
+    describe('navigationHistory.canGoBack and navigationHistory.goBack API', () => {
+      it('should not be able to go back if history is empty', async () => {
+        expect(w.webContents.navigationHistory.canGoBack()).to.be.false();
+      });
+
+      it('should be able to go back if history is not empty', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(1);
+        expect(w.webContents.navigationHistory.canGoBack()).to.be.true();
+        w.webContents.navigationHistory.goBack();
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(0);
+      });
+
+      it('should have the same window title if navigating back within the page', async () => {
+        const title = 'Test';
+        w.webContents.on('did-finish-load', () => {
+          w.setTitle(title);
+          w.loadURL(`file://${fixturesPath}/pages/navigation-history-anchor-in-page.html#next`);
+        });
+        await w.loadURL(`file://${fixturesPath}/pages/navigation-history-anchor-in-page.html`);
+        w.webContents.navigationHistory.goBack();
+        expect(w.getTitle()).to.equal(title);
+      });
+    });
+
+    describe('navigationHistory.canGoForward and navigationHistory.goForward API', () => {
+      it('should not be able to go forward if history is empty', async () => {
+        expect(w.webContents.navigationHistory.canGoForward()).to.be.false();
+      });
+
+      it('should not be able to go forward if current index is same as history length', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        expect(w.webContents.navigationHistory.canGoForward()).to.be.false();
+      });
+
+      it('should be able to go forward if history is not empty and active index is less than history length', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        w.webContents.navigationHistory.goBack();
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(0);
+        expect(w.webContents.navigationHistory.canGoForward()).to.be.true();
+        w.webContents.navigationHistory.goForward();
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(1);
+      });
+
+      it('should have the same window title if navigating forward within the page', async () => {
+        const title = 'Test';
+        w.webContents.on('did-finish-load', () => {
+          w.setTitle(title);
+          w.loadURL(`file://${fixturesPath}/pages/navigation-history-anchor-in-page.html#next`);
+        });
+        await w.loadURL(`file://${fixturesPath}/pages/navigation-history-anchor-in-page.html`);
+        expect(w.getTitle()).to.equal(title);
+      });
+    });
+
+    describe('navigationHistory.canGoToOffset(index) and navigationHistory.goToOffset(index) API', () => {
+      it('should not be able to go to invalid offset', async () => {
+        expect(w.webContents.navigationHistory.canGoToOffset(-1)).to.be.false();
+        expect(w.webContents.navigationHistory.canGoToOffset(10)).to.be.false();
+      });
+
+      it('should be able to go to valid negative offset', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+        expect(w.webContents.navigationHistory.canGoToOffset(-2)).to.be.true();
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(2);
+        w.webContents.navigationHistory.goToOffset(-2);
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(0);
+      });
+
+      it('should be able to go to valid positive offset', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+
+        w.webContents.navigationHistory.goBack();
+        expect(w.webContents.navigationHistory.canGoToOffset(1)).to.be.true();
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(1);
+        w.webContents.navigationHistory.goToOffset(1);
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(2);
+      });
+    });
+
+    describe('navigationHistory.clear API', () => {
+      it('should be able clear history', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+
+        expect(w.webContents.navigationHistory.length()).to.equal(3);
+        w.webContents.navigationHistory.clear();
+        expect(w.webContents.navigationHistory.length()).to.equal(1);
+      });
+    });
+
+    describe('navigationHistory.getEntryAtIndex(index) API ', () => {
+      it('should fetch default navigation entry when no urls are loaded', async () => {
+        const result = w.webContents.navigationHistory.getEntryAtIndex(0);
+        expect(result.url).to.equal('');
+        expect(result.title).to.equal('');
+      });
+      it('should fetch navigation entry given a valid index', async () => {
+        await w.loadURL(urlPage1);
+        const result = w.webContents.navigationHistory.getEntryAtIndex(0);
+        expect(result.url).to.equal(urlPage1);
+        expect(result.title).to.equal('Page 1');
+      });
+      it('should return null given an invalid index larger than history length', async () => {
+        await w.loadURL(urlPage1);
+        const result = w.webContents.navigationHistory.getEntryAtIndex(5);
+        expect(result).to.be.null();
+      });
+      it('should return null given an invalid negative index', async () => {
+        await w.loadURL(urlPage1);
+        const result = w.webContents.navigationHistory.getEntryAtIndex(-1);
+        expect(result).to.be.null();
+      });
+    });
+
+    describe('navigationHistory.getActiveIndex() API', () => {
+      it('should return valid active index after a single page visit', async () => {
+        await w.loadURL(urlPage1);
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(0);
+      });
+
+      it('should return valid active index after a multiple page visits', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(2);
+      });
+
+      it('should return valid active index given no page visits', async () => {
+        expect(w.webContents.navigationHistory.getActiveIndex()).to.equal(0);
+      });
+    });
+
+    describe('navigationHistory.length() API', () => {
+      it('should return valid history length after a single page visit', async () => {
+        await w.loadURL(urlPage1);
+        expect(w.webContents.navigationHistory.length()).to.equal(1);
+      });
+
+      it('should return valid history length after a multiple page visits', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+
+        expect(w.webContents.navigationHistory.length()).to.equal(3);
+      });
+
+      it('should return valid history length given no page visits', async () => {
+        // Note: Even if no navigation has committed, the history list will always start with an initial navigation entry
+        // Ref: https://source.chromium.org/chromium/chromium/src/+/main:ceontent/public/browser/navigation_controller.h;l=381
+        expect(w.webContents.navigationHistory.length()).to.equal(1);
+      });
+    });
+
+    describe('navigationHistory.getAllEntries() API', () => {
+      it('should return all navigation entries as an array of NavigationEntry objects', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+        const entries = w.webContents.navigationHistory.getAllEntries().map(entry => ({
+          url: entry.url,
+          title: entry.title
+        }));
+        expect(entries.length).to.equal(3);
+        expect(entries[0]).to.deep.equal({ url: urlPage1, title: 'Page 1' });
+        expect(entries[1]).to.deep.equal({ url: urlPage2, title: 'Page 2' });
+        expect(entries[2]).to.deep.equal({ url: urlPage3, title: 'Page 3' });
+      });
+
+      it('should return an empty array when there is no navigation history', async () => {
+        const entries = w.webContents.navigationHistory.getAllEntries();
+        expect(entries.length).to.equal(0);
+      });
+
+      it('should create a NavigationEntry with PageState that can be serialized/deserialized with JSON', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+
+        const entries = w.webContents.navigationHistory.getAllEntries();
+        const serialized = JSON.stringify(entries);
+        const deserialized = JSON.parse(serialized);
+        expect(deserialized).to.deep.equal(entries);
+      });
+    });
+
+    describe('navigationHistory.restore({ index, entries }) API', () => {
+      let server: http.Server;
+      let serverUrl: string;
+
+      before(async () => {
+        server = http.createServer((req, res) => {
+          res.setHeader('Content-Type', 'text/html');
+          res.end('<html><head><title>Form</title></head><body><form><input type="text" value="value" /></form></body></html>');
+        });
+        serverUrl = (await listen(server)).url;
+      });
+
+      after(async () => {
+        if (server) await new Promise(resolve => server.close(resolve));
+        server = null as any;
+      });
+
+      it('should restore navigation history with PageState', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(serverUrl);
+
+        // Fill out the form on the page
+        await w.webContents.executeJavaScript('document.querySelector("input").value = "Hi!";');
+
+        // PageState is committed:
+        // 1) When the page receives an unload event
+        // 2) During periodic serialization of page state
+        // To not wait randomly for the second option, we'll trigger another load
+        await w.loadURL(urlPage3);
+
+        // Save the navigation state
+        const entries = w.webContents.navigationHistory.getAllEntries();
+
+        // Close the window, make a new one
+        w.close();
+        w = new BrowserWindow();
+
+        const formValue = await new Promise<string>(resolve => {
+          w.webContents.once('dom-ready', () => resolve(w.webContents.executeJavaScript('document.querySelector("input").value')));
+
+          // Restore the navigation history
+          return w.webContents.navigationHistory.restore({ index: 2, entries });
+        });
+
+        await waitUntil(() => formValue === 'Hi!');
+      });
+
+      it('should handle invalid base64 pageState', async () => {
+        await w.loadURL(urlPage1);
+        await w.loadURL(urlPage2);
+        await w.loadURL(urlPage3);
+
+        const brokenEntries = w.webContents.navigationHistory.getAllEntries().map(entry => ({
+          ...entry,
+          pageState: 'invalid base64'
+        }));
+
+        // Close the window, make a new one
+        w.close();
+        w = new BrowserWindow();
+        await w.webContents.navigationHistory.restore({ index: 2, entries: brokenEntries });
+
+        const entries = w.webContents.navigationHistory.getAllEntries();
+
+        // Check that we used the original url and titles but threw away the broken
+        // pageState
+        entries.forEach((entry, index) => {
+          expect(entry.url).to.equal(brokenEntries[index].url);
+          expect(entry.title).to.equal(brokenEntries[index].title);
+          expect(entry.pageState?.length).to.be.greaterThanOrEqual(100);
+        });
+      });
+    });
+
+    it('should restore an overridden user agent', async () => {
+      const partition = 'persist:wcvtest';
+      const testUA = 'MyCustomUA';
+
+      const ses = session.fromPartition(partition);
+      ses.setUserAgent(testUA);
+
+      const wcv = new WebContentsView({
+        webPreferences: { partition }
+      });
+
+      wcv.webContents.navigationHistory.restore({
+        entries: [{
+          url: urlPage1,
+          title: 'url1'
+        }],
+        index: 0
+      });
+
+      const ua = wcv.webContents.getUserAgent();
+      const wcvua = await wcv.webContents.executeJavaScript('navigator.userAgent');
+
+      expect(ua).to.equal(wcvua);
     });
   });
 
@@ -559,6 +1049,43 @@ describe('webContents module', () => {
       await devToolsClosed;
       expect(() => { webContents.getFocusedWebContents(); }).to.not.throw();
     });
+
+    it('Inspect activates detached devtools window', async () => {
+      const window = new BrowserWindow({ show: true });
+      await window.loadURL('about:blank');
+      const webContentsBeforeOpenedDevtools = webContents.getAllWebContents();
+
+      const windowWasBlurred = once(window, 'blur');
+      window.webContents.openDevTools({ mode: 'detach' });
+      await windowWasBlurred;
+
+      let devToolsWebContents = null;
+      for (const newWebContents of webContents.getAllWebContents()) {
+        const oldWebContents = webContentsBeforeOpenedDevtools.find(
+          oldWebContents => {
+            return newWebContents.id === oldWebContents.id;
+          });
+        if (oldWebContents !== null) {
+          devToolsWebContents = newWebContents;
+          break;
+        }
+      }
+      assert(devToolsWebContents !== null);
+
+      const windowFocused = once(window, 'focus');
+      const devToolsBlurred = once(devToolsWebContents, 'blur');
+      window.focus();
+      await Promise.all([windowFocused, devToolsBlurred]);
+
+      expect(devToolsWebContents.isFocused()).to.be.false();
+      const devToolsWebContentsFocused = once(devToolsWebContents, 'focus');
+      const windowBlurred = once(window, 'blur');
+      window.webContents.inspectElement(100, 100);
+      await Promise.all([devToolsWebContentsFocused, windowBlurred]);
+
+      expect(devToolsWebContents.isFocused()).to.be.true();
+      expect(window.isFocused()).to.be.false();
+    });
   });
 
   describe('setDevToolsWebContents() API', () => {
@@ -578,6 +1105,7 @@ describe('webContents module', () => {
   });
 
   describe('isFocused() API', () => {
+    afterEach(closeAllWindows);
     it('returns false when the window is hidden', async () => {
       const w = new BrowserWindow({ show: false });
       await w.loadURL('about:blank');
@@ -674,6 +1202,76 @@ describe('webContents module', () => {
       expect(w.webContents.isDevToolsOpened()).to.be.true();
       w.webContents.setDevToolsTitle('newTitle');
       expect(w.webContents.getDevToolsTitle()).to.equal('newTitle');
+    });
+  });
+
+  describe('before-mouse-event event', () => {
+    afterEach(closeAllWindows);
+    it('can prevent document mouse events', async () => {
+      const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, contextIsolation: false } });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'mouse-events.html'));
+      const mouseDown = new Promise(resolve => {
+        ipcMain.once('mousedown', (event, button) => resolve(button));
+      });
+      w.webContents.once('before-mouse-event', (event, input) => {
+        if (input.button === 'left') event.preventDefault();
+      });
+      w.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', x: 100, y: 100 });
+      w.webContents.sendInputEvent({ type: 'mouseDown', button: 'right', x: 100, y: 100 });
+      expect(await mouseDown).to.equal(2); // Right button is 2
+    });
+
+    it('has the correct properties', async () => {
+      const w = new BrowserWindow({ show: false });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'base-page.html'));
+      const testBeforeMouse = async (opts: Electron.MouseInputEvent) => {
+        const p = once(w.webContents, 'before-mouse-event');
+        w.webContents.sendInputEvent({
+          type: opts.type,
+          button: opts.button,
+          x: opts.x,
+          y: opts.y,
+          globalX: opts.globalX,
+          globalY: opts.globalY,
+          clickCount: opts.clickCount
+        });
+        const [, input] = await p;
+
+        expect(input.type).to.equal(opts.type);
+        expect(input.button).to.equal(opts.button);
+        expect(input.x).to.equal(opts.x);
+        expect(input.y).to.equal(opts.y);
+        expect(input.globalX).to.equal(opts.globalX);
+        expect(input.globalY).to.equal(opts.globalY);
+        expect(input.clickCount).to.equal(opts.clickCount);
+      };
+      await testBeforeMouse({
+        type: 'mouseDown',
+        button: 'left',
+        x: 100,
+        y: 100,
+        globalX: 200,
+        globalY: 200,
+        clickCount: 1
+      });
+      await testBeforeMouse({
+        type: 'mouseUp',
+        button: 'right',
+        x: 150,
+        y: 150,
+        globalX: 250,
+        globalY: 250,
+        clickCount: 2
+      });
+      await testBeforeMouse({
+        type: 'mouseMove',
+        button: 'middle',
+        x: 200,
+        y: 200,
+        globalX: 300,
+        globalY: 300,
+        clickCount: 0
+      });
     });
   });
 
@@ -935,6 +1533,7 @@ describe('webContents module', () => {
   });
 
   describe('startDrag({file, icon})', () => {
+    afterEach(closeAllWindows);
     it('throws errors for a missing file or a missing/empty icon', () => {
       const w = new BrowserWindow({ show: false });
       expect(() => {
@@ -946,7 +1545,7 @@ describe('webContents module', () => {
       }).to.throw('\'icon\' parameter is required');
 
       expect(() => {
-        w.webContents.startDrag({ file: __filename, icon: path.join(mainFixturesPath, 'blank.png') });
+        w.webContents.startDrag({ file: __filename, icon: path.join(fixturesPath, 'blank.png') });
       }).to.throw(/Failed to load image from path (.+)/);
     });
   });
@@ -967,6 +1566,22 @@ describe('webContents module', () => {
         child.close();
         expect(currentFocused).to.be.true();
         expect(childFocused).to.be.false();
+      });
+
+      it('does not crash when focusing a WebView webContents', async () => {
+        const w = new BrowserWindow({
+          show: false,
+          webPreferences: {
+            nodeIntegration: true,
+            webviewTag: true
+          }
+        });
+
+        w.show();
+        await w.loadURL('data:text/html,<webview src="data:text/html,hi"></webview>');
+
+        const wc = webContents.getAllWebContents().find((wc) => wc.getType() === 'webview')!;
+        expect(() => wc.focus()).to.not.throw();
       });
     });
 
@@ -1001,6 +1616,35 @@ describe('webContents module', () => {
         await expect(blurPromise).to.eventually.be.fulfilled();
       });
     });
+
+    describe('focusOnNavigation webPreference', () => {
+      afterEach(closeAllWindows);
+
+      it('focuses the webContents on navigation by default', async () => {
+        const w = new BrowserWindow({ show: true });
+        await once(w, 'focus');
+        await w.loadURL('about:blank');
+        await moveFocusToDevTools(w);
+        expect(w.webContents.isFocused()).to.be.false();
+        await w.loadURL('data:text/html,<body>test</body>');
+        expect(w.webContents.isFocused()).to.be.true();
+      });
+
+      it('does not focus the webContents on navigation when focusOnNavigation is false', async () => {
+        const w = new BrowserWindow({
+          show: true,
+          webPreferences: {
+            focusOnNavigation: false
+          }
+        });
+        await once(w, 'focus');
+        await w.loadURL('about:blank');
+        await moveFocusToDevTools(w);
+        expect(w.webContents.isFocused()).to.be.false();
+        await w.loadURL('data:text/html,<body>test</body>');
+        expect(w.webContents.isFocused()).to.be.false();
+      });
+    });
   });
 
   describe('getOSProcessId()', () => {
@@ -1023,6 +1667,7 @@ describe('webContents module', () => {
   });
 
   describe('userAgent APIs', () => {
+    afterEach(closeAllWindows);
     it('is not empty by default', () => {
       const w = new BrowserWindow({ show: false });
       const userAgent = w.webContents.getUserAgent();
@@ -1053,6 +1698,7 @@ describe('webContents module', () => {
   });
 
   describe('audioMuted APIs', () => {
+    afterEach(closeAllWindows);
     it('can set the audio mute level (functions)', () => {
       const w = new BrowserWindow({ show: false });
 
@@ -1268,6 +1914,9 @@ describe('webContents module', () => {
           res.end();
         });
       });
+      defer(() => {
+        server.close();
+      });
       listen(server).then(({ url }) => {
         const content = `<iframe src=${url}></iframe>`;
         w.webContents.on('did-frame-finish-load', (e, isMainFrame) => {
@@ -1280,8 +1929,6 @@ describe('webContents module', () => {
               done();
             } catch (e) {
               done(e);
-            } finally {
-              server.close();
             }
           }
         });
@@ -1454,6 +2101,38 @@ describe('webContents module', () => {
       }())`, true);
       const [childWindow] = await childPromise;
       expect(childWindow.webContents.opener).to.be.null();
+    });
+  });
+
+  describe('focusedFrame api', () => {
+    const focusFrame = (frame: Electron.WebFrameMain) => {
+      // There has to be a better way to do this...
+      return frame.executeJavaScript(`(${() => {
+        const input = document.createElement('input');
+        document.body.appendChild(input);
+        input.onfocus = () => input.remove();
+        input.focus();
+      }})()`, true);
+    };
+
+    it('is null before a url is committed', () => {
+      const w = new BrowserWindow({ show: false });
+      expect(w.webContents.focusedFrame).to.be.null();
+    });
+
+    it('is set when main frame is focused', async () => {
+      const w = new BrowserWindow({ show: true });
+      await w.loadURL('about:blank');
+      w.webContents.focus();
+      await waitUntil(() => w.webContents.focusedFrame === w.webContents.mainFrame);
+    });
+
+    it('is set to child frame when focused', async () => {
+      const w = new BrowserWindow({ show: true });
+      await w.loadFile(path.join(fixturesPath, 'sub-frames', 'frame-with-frame-container.html'));
+      const childFrame = w.webContents.mainFrame.frames[0];
+      await focusFrame(childFrame);
+      await waitUntil(() => w.webContents.focusedFrame === childFrame);
     });
   });
 
@@ -1707,9 +2386,9 @@ describe('webContents module', () => {
     afterEach(closeAllWindows);
     it('is triggered with correct log message', (done) => {
       const w = new BrowserWindow({ show: true });
-      w.webContents.on('console-message', (e, level, message) => {
+      w.webContents.on('console-message', (e) => {
         // Don't just assert as Chromium might emit other logs that we should ignore.
-        if (message === 'a') {
+        if (e.message === 'a') {
           done();
         }
       });
@@ -1765,11 +2444,12 @@ describe('webContents module', () => {
             return done();
           } catch (e) {
             return done(e);
-          } finally {
-            server.close();
           }
         }
         res.end('<a id="a" href="/should_have_referrer" target="_blank">link</a>');
+      });
+      defer(() => {
+        server.close();
       });
       listen(server).then(({ url }) => {
         w.webContents.once('did-finish-load', () => {
@@ -1796,6 +2476,9 @@ describe('webContents module', () => {
           }
         }
         res.end('');
+      });
+      defer(() => {
+        server.close();
       });
       listen(server).then(({ url }) => {
         w.webContents.once('did-finish-load', () => {
@@ -2015,7 +2698,46 @@ describe('webContents module', () => {
   });
 
   ifdescribe(features.isPrintingEnabled())('printToPDF()', () => {
+    let server: http.Server | null;
+    const readPDF = async (data: any) => {
+      const tmpDir = await fs.promises.mkdtemp(path.resolve(os.tmpdir(), 'e-spec-printtopdf-'));
+      const pdfPath = path.resolve(tmpDir, 'test.pdf');
+      await fs.promises.writeFile(pdfPath, data);
+      const pdfReaderPath = path.resolve(fixturesPath, 'api', 'pdf-reader.mjs');
+
+      const result = cp.spawn(process.execPath, [pdfReaderPath, pdfPath], {
+        stdio: 'pipe'
+      });
+
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      result.stdout.on('data', (chunk) => stdout.push(chunk));
+      result.stderr.on('data', (chunk) => stderr.push(chunk));
+
+      const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => {
+        result.on('close', (code, signal) => {
+          resolve([code, signal]);
+        });
+      });
+      await fs.promises.rm(tmpDir, { force: true, recursive: true });
+      if (code !== 0) {
+        const errMsg = Buffer.concat(stderr).toString().trim();
+        console.error(`Error parsing PDF file, exit code was ${code}; signal was ${signal}, error: ${errMsg}`);
+      }
+      try {
+        return JSON.parse(Buffer.concat(stdout).toString().trim());
+      } catch (err) {
+        console.error('Error parsing PDF file:', err);
+        console.error('Raw output:', Buffer.concat(stdout).toString().trim());
+        throw err;
+      }
+    };
+
     let w: BrowserWindow;
+
+    const containsText = (items: any[], text: RegExp) => {
+      return items.some(({ str }: { str: string }) => str.match(text));
+    };
 
     beforeEach(() => {
       w = new BrowserWindow({
@@ -2026,7 +2748,12 @@ describe('webContents module', () => {
       });
     });
 
-    afterEach(closeAllWindows);
+    afterEach(() => {
+      closeAllWindows();
+      if (server) {
+        server.close();
+      }
+    });
 
     it('rejects on incorrectly typed parameters', async () => {
       const badTypes = {
@@ -2039,7 +2766,9 @@ describe('webContents module', () => {
         pageRanges: { oops: 'im-not-the-right-key' },
         headerTemplate: [1, 2, 3],
         footerTemplate: [4, 5, 6],
-        preferCSSPageSize: 'no'
+        preferCSSPageSize: 'no',
+        generateTaggedPDF: 'wtf',
+        generateDocumentOutline: [7, 8, 9]
       };
 
       await w.loadURL('data:text/html,<h1>Hello, World!</h1>');
@@ -2049,6 +2778,20 @@ describe('webContents module', () => {
         const param = { [key]: value };
         await expect(w.webContents.printToPDF(param)).to.eventually.be.rejected();
       }
+    });
+
+    it('rejects when margins exceed physical page size', async () => {
+      await w.loadURL('data:text/html,<h1>Hello, World!</h1>');
+
+      await expect(w.webContents.printToPDF({
+        pageSize: 'Letter',
+        margins: {
+          top: 100,
+          bottom: 100,
+          left: 5,
+          right: 5
+        }
+      })).to.eventually.be.rejectedWith('margins must be less than or equal to pageSize');
     });
 
     it('does not crash when called multiple times in parallel', async () => {
@@ -2108,12 +2851,11 @@ describe('webContents module', () => {
       for (const format of Object.keys(paperFormats) as PageSizeString[]) {
         const data = await w.webContents.printToPDF({ pageSize: format });
 
-        const doc = await pdfjs.getDocument(data).promise;
-        const page = await doc.getPage(1);
+        const pdfInfo = await readPDF(data);
 
         // page.view is [top, left, width, height].
-        const width = page.view[2] / 72;
-        const height = page.view[3] / 72;
+        const width = pdfInfo.view[2] / 72;
+        const height = pdfInfo.view[3] / 72;
 
         const approxEq = (a: number, b: number, epsilon = 0.01) => Math.abs(a - b) <= epsilon;
 
@@ -2123,7 +2865,7 @@ describe('webContents module', () => {
     });
 
     it('with custom header and footer', async () => {
-      await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'print-to-pdf-small.html'));
+      await w.loadFile(path.join(fixturesPath, 'api', 'print-to-pdf-small.html'));
 
       const data = await w.webContents.printToPDF({
         displayHeaderFooter: true,
@@ -2131,28 +2873,21 @@ describe('webContents module', () => {
         footerTemplate: '<div>I\'m a PDF footer</div>'
       });
 
-      const doc = await pdfjs.getDocument(data).promise;
-      const page = await doc.getPage(1);
+      const pdfInfo = await readPDF(data);
 
-      const { items } = await page.getTextContent();
-
-      // Check that generated PDF contains a header.
-      const containsText = (text: RegExp) => items.some(({ str }: { str: string }) => str.match(text));
-
-      expect(containsText(/I'm a PDF header/)).to.be.true();
-      expect(containsText(/I'm a PDF footer/)).to.be.true();
+      expect(containsText(pdfInfo.textContent, /I'm a PDF header/)).to.be.true();
+      expect(containsText(pdfInfo.textContent, /I'm a PDF footer/)).to.be.true();
     });
 
     it('in landscape mode', async () => {
       await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'print-to-pdf-small.html'));
 
       const data = await w.webContents.printToPDF({ landscape: true });
-      const doc = await pdfjs.getDocument(data).promise;
-      const page = await doc.getPage(1);
+      const pdfInfo = await readPDF(data);
 
       // page.view is [top, left, width, height].
-      const width = page.view[2];
-      const height = page.view[3];
+      const width = pdfInfo.view[2];
+      const height = pdfInfo.view[3];
 
       expect(width).to.be.greaterThan(height);
     });
@@ -2165,32 +2900,104 @@ describe('webContents module', () => {
         landscape: true
       });
 
-      const doc = await pdfjs.getDocument(data).promise;
+      const pdfInfo = await readPDF(data);
 
       // Check that correct # of pages are rendered.
-      expect(doc.numPages).to.equal(3);
+      expect(pdfInfo.numPages).to.equal(3);
     });
 
     it('does not tag PDFs by default', async () => {
       await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'print-to-pdf-small.html'));
 
       const data = await w.webContents.printToPDF({});
-      const doc = await pdfjs.getDocument(data).promise;
-      const markInfo = await doc.getMarkInfo();
-      expect(markInfo).to.be.null();
+      const pdfInfo = await readPDF(data);
+      expect(pdfInfo.markInfo).to.be.null();
+    });
+
+    it('can print same-origin iframes', async () => {
+      await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'print-to-pdf-same-origin.html'));
+
+      const data = await w.webContents.printToPDF({});
+      const pdfInfo = await readPDF(data);
+      expect(containsText(pdfInfo.textContent, /Virtual member functions/)).to.be.true();
+    });
+
+    // TODO(codebytere): OOPIF printing is disabled on Linux at the moment due to crashes.
+    ifit(process.platform !== 'linux')('can print cross-origin iframes', async () => {
+      server = http.createServer((_, res) => {
+        res.writeHead(200);
+        res.end(`
+          <title>cross-origin iframe</title>
+          <p>This page is displayed in an iframe.</p>
+        `);
+      });
+      const { port } = await listen(server);
+
+      await w.loadURL(`data:text/html,<iframe src="http://localhost:${port}"></iframe>`);
+
+      const data = await w.webContents.printToPDF({});
+      const pdfInfo = await readPDF(data);
+      expect(containsText(pdfInfo.textContent, /This page is displayed in an iframe./)).to.be.true();
     });
 
     it('can generate tag data for PDFs', async () => {
       await w.loadFile(path.join(__dirname, 'fixtures', 'api', 'print-to-pdf-small.html'));
 
       const data = await w.webContents.printToPDF({ generateTaggedPDF: true });
-      const doc = await pdfjs.getDocument(data).promise;
-      const markInfo = await doc.getMarkInfo();
-      expect(markInfo).to.deep.equal({
+      const pdfInfo = await readPDF(data);
+      expect(pdfInfo.markInfo).to.deep.equal({
         Marked: true,
         UserProperties: false,
         Suspects: false
       });
+    });
+
+    it('from an existing pdf document', async () => {
+      const pdfPath = path.join(fixturesPath, 'cat.pdf');
+      const readyToPrint = once(w.webContents, '-pdf-ready-to-print');
+      await w.loadFile(pdfPath);
+      await readyToPrint;
+      const data = await w.webContents.printToPDF({});
+      const pdfInfo = await readPDF(data);
+      expect(pdfInfo.numPages).to.equal(2);
+      expect(containsText(pdfInfo.textContent, /Cat: The Ideal Pet/)).to.be.true();
+    });
+
+    it('from an existing pdf document in a WebView', async () => {
+      const win = new BrowserWindow({
+        show: false,
+        webPreferences: {
+          webviewTag: true
+        }
+      });
+
+      await win.loadURL('about:blank');
+      const webContentsCreated = once(app, 'web-contents-created') as Promise<[any, WebContents]>;
+
+      const src = url.format({
+        pathname: `${fixturesPath.replaceAll('\\', '/')}/cat.pdf`,
+        protocol: 'file',
+        slashes: true
+      });
+      await win.webContents.executeJavaScript(`
+        new Promise((resolve, reject) => {
+          const webview = new WebView()
+          webview.setAttribute('src', '${src}')
+          document.body.appendChild(webview)
+          webview.addEventListener('did-finish-load', () => {
+            resolve()
+          })
+        })
+      `);
+
+      const [, webContents] = await webContentsCreated;
+
+      await once(webContents, '-pdf-ready-to-print');
+
+      const data = await webContents.printToPDF({});
+      const pdfInfo = await readPDF(data);
+      expect(pdfInfo.numPages).to.equal(2);
+      expect(containsText(pdfInfo.textContent, /Cat: The Ideal Pet/)).to.be.true();
     });
   });
 
@@ -2386,10 +3193,108 @@ describe('webContents module', () => {
       expect(params.x).to.be.a('number');
       expect(params.y).to.be.a('number');
     });
+
+    // Skipping due to lack of native click support.
+    it.skip('emits the correct number of times when right-clicked in page', async () => {
+      const w = new BrowserWindow({ show: true });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'base-page.html'));
+
+      let contextMenuEmitCount = 0;
+
+      w.webContents.on('context-menu', () => {
+        contextMenuEmitCount++;
+      });
+
+      // TODO(samuelmaddock): Perform native right-click. We've tried then
+      // dropped robotjs and nutjs so for now this is a manual test.
+
+      await once(w.webContents, 'context-menu');
+      await setTimeout(100);
+      expect(contextMenuEmitCount).to.equal(1);
+    });
+
+    it('emits when right-clicked in page in a draggable region', async () => {
+      const w = new BrowserWindow({ show: false });
+
+      if (process.platform === 'win32') {
+        w.on('system-context-menu', (event) => { event.preventDefault(); });
+      }
+
+      await w.loadFile(path.join(fixturesPath, 'pages', 'draggable-page.html'));
+
+      const promise = once(w.webContents, 'context-menu') as Promise<[any, Electron.ContextMenuParams]>;
+
+      // Simulate right-click to create context-menu event.
+      const midPoint = w.getBounds().width / 2;
+      const opts = { x: midPoint, y: midPoint, button: 'right' as const };
+      w.webContents.sendInputEvent({ ...opts, type: 'mouseDown' });
+      w.webContents.sendInputEvent({ ...opts, type: 'mouseUp' });
+
+      const [, params] = await promise;
+
+      expect(params.pageURL).to.equal(w.webContents.getURL());
+      expect(params.frame).to.be.an('object');
+      expect(params.x).to.be.a('number');
+      expect(params.y).to.be.a('number');
+    });
+
+    it('emits when right clicked in a WebContentsView', async () => {
+      const w = new BaseWindow({ show: false });
+
+      const mainView = new WebContentsView({
+        webPreferences: {
+          preload: path.join(__dirname, 'preload.js')
+        }
+      });
+
+      const draggablePage = path.join(fixturesPath, 'pages', 'draggable-page.html');
+      await mainView.webContents.loadFile(draggablePage);
+
+      w.contentView.addChildView(mainView);
+
+      const { width, height } = w.getContentBounds();
+      mainView.setBounds({ x: 0, y: 0, width, height });
+
+      const promise = once(mainView.webContents, 'context-menu') as Promise<[any, Electron.ContextMenuParams]>;
+
+      // Simulate right-click to create context-menu event.
+      const opts = { x: 0, y: 0, button: 'right' as const };
+      mainView.webContents.sendInputEvent({ ...opts, type: 'mouseDown' });
+      mainView.webContents.sendInputEvent({ ...opts, type: 'mouseUp' });
+
+      const [, params] = await promise;
+
+      expect(params.pageURL).to.equal(mainView.webContents.getURL());
+      expect(params.frame).to.be.an('object');
+      expect(params.x).to.be.a('number');
+      expect(params.y).to.be.a('number');
+    });
+
+    it('emits when right clicked in a BrowserWindow with vibrancy', async () => {
+      const w = new BrowserWindow({ show: false, vibrancy: 'titlebar' });
+      await w.loadFile(path.join(fixturesPath, 'pages', 'draggable-page.html'));
+
+      const promise = once(w.webContents, 'context-menu') as Promise<[any, Electron.ContextMenuParams]>;
+
+      // Simulate right-click to create context-menu event.
+      const opts = { x: 0, y: 0, button: 'right' as const };
+      w.webContents.sendInputEvent({ ...opts, type: 'mouseDown' });
+      w.webContents.sendInputEvent({ ...opts, type: 'mouseUp' });
+
+      const [, params] = await promise;
+
+      expect(params.pageURL).to.equal(w.webContents.getURL());
+      expect(params.frame).to.be.an('object');
+      expect(params.x).to.be.a('number');
+      expect(params.y).to.be.a('number');
+    });
   });
 
   describe('close() method', () => {
-    afterEach(closeAllWindows);
+    afterEach(async () => {
+      await closeAllWindows();
+      await cleanupWebContents();
+    });
 
     it('closes when close() is called', async () => {
       const w = (webContents as typeof ElectronInternal.WebContents).create();
@@ -2470,18 +3375,18 @@ describe('webContents module', () => {
     it('emits when moveTo is called', async () => {
       const w = new BrowserWindow({ show: false });
       w.loadURL('about:blank');
-      w.webContents.executeJavaScript('window.moveTo(100, 100)', true);
+      w.webContents.executeJavaScript('window.moveTo(50, 50)', true);
       const [, rect] = await once(w.webContents, 'content-bounds-updated') as [any, Electron.Rectangle];
       const { width, height } = w.getBounds();
       expect(rect).to.deep.equal({
-        x: 100,
-        y: 100,
+        x: 50,
+        y: 50,
         width,
         height
       });
       await new Promise(setImmediate);
-      expect(w.getBounds().x).to.equal(100);
-      expect(w.getBounds().y).to.equal(100);
+      expect(w.getBounds().x).to.equal(50);
+      expect(w.getBounds().y).to.equal(50);
     });
 
     it('emits when resizeTo is called', async () => {
@@ -2500,15 +3405,17 @@ describe('webContents module', () => {
       expect({
         width: w.getBounds().width,
         height: w.getBounds().height
-      }).to.deep.equal(process.platform === 'win32' ? {
-        // The width is reported as being larger on Windows? I'm not sure why
-        // this is.
-        width: 136,
-        height: 100
-      } : {
-        width: 100,
-        height: 100
-      });
+      }).to.deep.equal(process.platform === 'win32'
+        ? {
+            // The width is reported as being larger on Windows? I'm not sure why
+            // this is.
+            width: 136,
+            height: 100
+          }
+        : {
+            width: 100,
+            height: 100
+          });
     });
 
     it('does not change window bounds if cancelled', async () => {

@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "base/files/file_util.h"
-#include "base/logging.h"
 #include "shell/common/asar/asar_util.h"
 #include "shell/common/thread_restrictions.h"
 
@@ -55,7 +54,7 @@ bool ScopedTemporaryFile::InitFromFile(
     const base::FilePath::StringType& ext,
     uint64_t offset,
     uint64_t size,
-    const absl::optional<IntegrityPayload>& integrity) {
+    const std::optional<IntegrityPayload>& integrity) {
   if (!src->IsValid())
     return false;
 
@@ -63,21 +62,15 @@ bool ScopedTemporaryFile::InitFromFile(
     return false;
 
   electron::ScopedAllowBlockingForElectron allow_blocking;
-  std::vector<char> buf(size);
-  int len = src->Read(offset, buf.data(), buf.size());
-  if (len != static_cast<int>(size))
+  std::vector<uint8_t> buf(size);
+  if (!src->ReadAndCheck(offset, buf))
     return false;
 
-  if (integrity.has_value()) {
-    ValidateIntegrityOrDie(buf.data(), buf.size(), integrity.value());
-  }
+  if (integrity)
+    ValidateIntegrityOrDie(buf, *integrity);
 
   base::File dest(path_, base::File::FLAG_OPEN | base::File::FLAG_WRITE);
-  if (!dest.IsValid())
-    return false;
-
-  return dest.WriteAtCurrentPos(buf.data(), buf.size()) ==
-         static_cast<int>(size);
+  return dest.IsValid() && dest.WriteAtCurrentPosAndCheck(buf);
 }
 
 }  // namespace asar

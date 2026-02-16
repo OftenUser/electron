@@ -7,9 +7,10 @@
 #include <memory>
 #include <utility>
 
+#include "base/notimplemented.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "build/build_config.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "device/bluetooth/bluetooth_device.h"
@@ -115,6 +116,10 @@ void ElectronBluetoothDelegate::RevokeDevicePermissionWebInitiated(
   NOTIMPLEMENTED();
 }
 
+bool ElectronBluetoothDelegate::MayUseBluetooth(RenderFrameHost* frame) {
+  return true;
+}
+
 bool ElectronBluetoothDelegate::IsAllowedToAccessService(
     RenderFrameHost* frame,
     const WebBluetoothDeviceId& device_id,
@@ -161,7 +166,7 @@ void ElectronBluetoothDelegate::ShowDevicePairPrompt(
     const std::u16string& device_identifier,
     PairPromptCallback callback,
     PairingKind pairing_kind,
-    const absl::optional<std::u16string>& pin) {
+    const std::optional<std::u16string>& pin) {
   auto* web_contents = content::WebContents::FromRenderFrameHost(frame);
   if (web_contents) {
     auto* permission_manager = static_cast<ElectronPermissionManager*>(
@@ -186,7 +191,7 @@ void ElectronBluetoothDelegate::ShowDevicePairPrompt(
 
 void ElectronBluetoothDelegate::OnDevicePairPromptResponse(
     PairPromptCallback callback,
-    base::Value::Dict response) {
+    base::DictValue response) {
   BluetoothDelegate::PairPromptResult result;
   if (response.FindBool("confirmed").value_or(false)) {
     result.result_code = BluetoothDelegate::PairPromptStatus::kSuccess;

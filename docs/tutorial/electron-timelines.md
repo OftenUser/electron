@@ -9,10 +9,21 @@ check out our [Electron Versioning](./electron-versioning.md) doc.
 
 | Electron | Alpha | Beta | Stable | EOL | Chrome | Node | Supported |
 | ------- | ----- | ------- | ------ | ------ | ---- | ---- | ---- |
-| 29.0.0 |  2023-Dec-07 | 2024-Jan-24 | 2024-Feb-20 | 2024-Aug-20 | M122 | v18.19 | ✅ |
-| 28.0.0 |  2023-Oct-11 | 2023-Nov-06 | 2023-Dec-05 | 2024-Jun-11 | M120 | v18.18 | ✅ |
-| 27.0.0 |  2023-Aug-17 | 2023-Sep-13 | 2023-Oct-10 | 2024-Apr-16 | M118 | v18.17 | ✅ |
-| 26.0.0 | 2023-Jun-01 | 2023-Jun-27 | 2023-Aug-15 | 2024-Feb-20 | M116 | v18.16 | ✅ |
+| 40.0.0 |  2025-Oct-30 | 2025-Dec-03 | 2026-Jan-13 | 2026-Jun-30 | M144 | TBD | ✅ |
+| 39.0.0 |  2025-Sep-04 | 2025-Oct-01 | 2025-Oct-28 | 2026-May-05 | M142 | v22.20 | ✅ |
+| 38.0.0 |  2025-Jun-26 | 2025-Aug-06 | 2025-Sep-02 | 2026-Mar-10 | M140 | v22.18 | ✅ |
+| 37.0.0 |  2025-May-01 | 2025-May-28 | 2025-Jun-24 | 2026-Jan-13 | M138 | v22.16 | ✅ |
+| 36.0.0 |  2025-Mar-06 | 2025-Apr-02 | 2025-Apr-29 | 2025-Oct-28 | M136 | v22.14 | 🚫 |
+| 35.0.0 |  2025-Jan-16 | 2025-Feb-05 | 2025-Mar-04 | 2025-Sep-02 | M134 | v22.14 | 🚫 |
+| 34.0.0 |  2024-Oct-17 | 2024-Nov-13 | 2025-Jan-14 | 2025-Jun-24 | M132 | v20.18 | 🚫 |
+| 33.0.0 |  2024-Aug-22 | 2024-Sep-18 | 2024-Oct-15 | 2025-Apr-29 | M130 | v20.18 | 🚫 |
+| 32.0.0 |  2024-Jun-14 | 2024-Jul-24 | 2024-Aug-20 | 2025-Mar-04 | M128 | v20.16 | 🚫 |
+| 31.0.0 |  2024-Apr-18 | 2024-May-15 | 2024-Jun-11 | 2025-Jan-14 | M126 | v20.14 | 🚫 |
+| 30.0.0 |  2024-Feb-22 | 2024-Mar-20 | 2024-Apr-16 | 2024-Oct-15 | M124 | v20.11 | 🚫 |
+| 29.0.0 |  2023-Dec-07 | 2024-Jan-24 | 2024-Feb-20 | 2024-Aug-20 | M122 | v20.9 | 🚫 |
+| 28.0.0 |  2023-Oct-11 | 2023-Nov-06 | 2023-Dec-05 | 2024-Jun-11 | M120 | v18.18 | 🚫 |
+| 27.0.0 |  2023-Aug-17 | 2023-Sep-13 | 2023-Oct-10 | 2024-Apr-16 | M118 | v18.17 | 🚫 |
+| 26.0.0 | 2023-Jun-01 | 2023-Jun-27 | 2023-Aug-15 | 2024-Feb-20 | M116 | v18.16 | 🚫 |
 | 25.0.0 | 2023-Apr-10 | 2023-May-02 | 2023-May-30 | 2023-Dec-05 | M114 | v18.15 | 🚫 |
 | 24.0.0 | 2023-Feb-09 | 2023-Mar-07 | 2023-Apr-04 | 2023-Oct-10 | M112 | v18.14 | 🚫 |
 | 23.0.0 | 2022-Dec-01 | 2023-Jan-10 | 2023-Feb-07 | 2023-Aug-15 | M110 | v18.12 | 🚫 |
@@ -38,6 +49,19 @@ check out our [Electron Versioning](./electron-versioning.md) doc.
 | 3.0.0 | -- | 2018-Jun-21 | 2018-Sep-18 | 2019-Jul-30 | M66 | v10.2 | 🚫 |
 | 2.0.0 | -- | 2018-Feb-21 | 2018-May-01 | 2019-Apr-23 | M61 | v8.9 | 🚫 |
 
+:::info Official support dates may change
+
+Electron's official support policy is the latest 3 stable releases. Our stable
+release and end-of-life dates are determined by Chromium, and may be subject to
+change. While we try to keep our planned release and end-of-life dates frequently
+updated here, future dates may change if affected by upstream scheduling changes,
+and may not always be accurately reflected.
+
+ See [Chromium's public release schedule](https://chromiumdash.appspot.com/schedule) for
+ definitive information about Chromium's scheduled release dates.
+
+ :::
+
 **Notes:**
 
 * The `-alpha.1`, `-beta.1`, and `stable` dates are our solid release dates.
@@ -49,19 +73,9 @@ check out our [Electron Versioning](./electron-versioning.md) doc.
 * Since Electron 5, Electron has been publicizing its release dates ([see blog post](https://www.electronjs.org/blog/electron-5-0-timeline)).
 * Since Electron 6, Electron major versions have been targeting every other Chromium major version. Each Electron stable should happen on the same day as Chrome stable ([see blog post](https://www.electronjs.org/blog/12-week-cadence)).
 * Since Electron 16, Electron has been releasing major versions on an 8-week cadence in accordance to Chrome's change to a 4-week release cadence ([see blog post](https://www.electronjs.org/blog/8-week-cadence)).
+* Electron temporarily extended support for Electron 22 until October 10, 2023, to support an extended end-of-life for Windows 7/8/8.1
 
 ## Version support policy
-
-:::info
-
-The Electron team will temporarily support Electron 22 until October 10, 2023.
-This extended support is intended to help Electron developers who still need
-support for Windows 7/8/8.1, which ended support in Electron 23. The October
-support date follows the extended support dates from both Chromium and Microsoft.
-On October 11, the Electron team will drop support back to the latest three
-stable major versions.
-
-:::
 
 The latest three _stable_ major versions are supported by the Electron team.
 For example, if the latest release is 6.1.x, then the 5.0.x as well
@@ -92,19 +106,12 @@ is as follows:
 
 <img src="https://raw.githubusercontent.com/nodejs/Release/main/schedule.svg?sanitize=true" alt="Releases">
 
-As a rule, stable branches of Electron do not receive Node.js upgrades after they have been cut.
 If Electron has recently updated its `main` branch to a new major version of Node.js, the next stable
 branch to be cut will be released with the new version.
 
-Patch upgrades of Node that contain significant security or bug fixes, and are submitted
-more than 2 weeks prior to a stable release date, will be accepted into an Electron alpha
-or beta release branch.
-
-Minor upgrades of Node that contain significant security or bug fixes, and are submitted
-more than 2 weeks prior to a stable release date may be accepted into an Electron alpha or
-beta release branch on a case-by-case basis. These requests will be reviewed and voted on
-by the [Releases Working Group](https://github.com/electron/governance/tree/main/wg-releases),
-to ensure minimal disruption for developers who may be consuming alpha or beta releases.
+Stable release lines of Electron will receive minor and patch bumps of Node.js after they are released.
+Patch bumps to Node.js will be released in patch releases of Electron, and minor bumps to Node.js will result in a minor release of Electron.
+Security-only release branches will receive security-related changes from Node.js releases, but not the full release.
 
 ### Breaking API changes
 
@@ -115,22 +122,3 @@ and that number is reduced to two in major version 10, the three-argument versio
 continue to work until, at minimum, major version 12. Past the minimum two-version
 threshold, we will attempt to support backwards compatibility beyond two versions
 until the maintainers feel the maintenance burden is too high to continue doing so.
-
-### End-of-life
-
-When a release branch reaches the end of its support cycle, the series
-will be deprecated in NPM and a final end-of-support release will be
-made. This release will add a warning to inform that an unsupported
-version of Electron is in use.
-
-These steps are to help app developers learn when a branch they're
-using becomes unsupported, but without being excessively intrusive
-to end users.
-
-If an application has exceptional circumstances and needs to stay
-on an unsupported series of Electron, developers can silence the
-end-of-support warning by omitting the final release from the app's
-`package.json` `devDependencies`. For example, since the 1-6-x series
-ended with an end-of-support 1.6.18 release, developers could choose
-to stay in the 1-6-x series without warnings with `devDependency` of
-`"electron": 1.6.0 - 1.6.17`.

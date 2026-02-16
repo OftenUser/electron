@@ -7,23 +7,27 @@
 
 #include <string>
 
-#include "gin/handle.h"
-#include "gin/wrappable.h"
 #include "shell/browser/auto_updater.h"
 #include "shell/browser/event_emitter_mixin.h"
 #include "shell/browser/window_list_observer.h"
+#include "shell/common/gin_helper/wrappable.h"
+
+namespace gin_helper {
+template <typename T>
+class Handle;
+}  // namespace gin_helper
 
 namespace electron::api {
 
-class AutoUpdater : public gin::Wrappable<AutoUpdater>,
-                    public gin_helper::EventEmitterMixin<AutoUpdater>,
-                    public auto_updater::Delegate,
-                    public WindowListObserver {
+class AutoUpdater final : public gin_helper::DeprecatedWrappable<AutoUpdater>,
+                          public gin_helper::EventEmitterMixin<AutoUpdater>,
+                          public auto_updater::Delegate,
+                          private WindowListObserver {
  public:
-  static gin::Handle<AutoUpdater> Create(v8::Isolate* isolate);
+  static gin_helper::Handle<AutoUpdater> Create(v8::Isolate* isolate);
 
-  // gin::Wrappable
-  static gin::WrapperInfo kWrapperInfo;
+  // gin_helper::Wrappable
+  static gin::DeprecatedWrapperInfo kWrapperInfo;
   gin::ObjectTemplateBuilder GetObjectTemplateBuilder(
       v8::Isolate* isolate) override;
   const char* GetTypeName() override;
@@ -36,7 +40,7 @@ class AutoUpdater : public gin::Wrappable<AutoUpdater>,
   AutoUpdater();
   ~AutoUpdater() override;
 
-  // Delegate implementations.
+  // auto_updater::Delegate:
   void OnError(const std::string& message) override;
   void OnError(const std::string& message,
                const int code,

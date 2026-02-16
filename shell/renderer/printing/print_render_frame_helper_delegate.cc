@@ -12,7 +12,7 @@
 #include "third_party/blink/public/web/web_local_frame.h"
 
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
-#include "chrome/common/pdf_util.h"
+#include "components/pdf/common/pdf_util.h"
 #include "extensions/common/constants.h"
 #include "extensions/renderer/guest_view/mime_handler_view/post_message_support.h"
 #endif  // BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
@@ -27,8 +27,8 @@ PrintRenderFrameHelperDelegate::~PrintRenderFrameHelperDelegate() = default;
 blink::WebElement PrintRenderFrameHelperDelegate::GetPdfElement(
     blink::WebLocalFrame* frame) {
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
-  if (frame->Parent() &&
-      IsPdfInternalPluginAllowedOrigin(frame->Parent()->GetSecurityOrigin())) {
+  if (frame->Parent() && IsPdfInternalPluginAllowedOrigin(
+                             frame->Parent()->GetSecurityOrigin(), {})) {
     auto plugin_element = frame->GetDocument().QuerySelector("embed");
     DCHECK(!plugin_element.IsNull());
     return plugin_element;
@@ -51,7 +51,7 @@ bool PrintRenderFrameHelperDelegate::OverridePrint(
     // instructs the PDF plugin to print. This is to make window.print() on a
     // PDF plugin document correctly print the PDF. See
     // https://crbug.com/448720.
-    base::Value::Dict message;
+    base::DictValue message;
     message.Set("type", "print");
     post_message_support->PostMessageFromValue(base::Value(std::move(message)));
     return true;

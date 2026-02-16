@@ -1,5 +1,6 @@
-import { BaseWindow, WebContents, TouchBar, BrowserView } from 'electron/main';
+import { BaseWindow, WebContents, BrowserView } from 'electron/main';
 import type { BrowserWindow as BWT } from 'electron/main';
+
 const { BrowserWindow } = process._linkedBinding('electron_browser_window') as { BrowserWindow: typeof BWT };
 
 Object.setPrototypeOf(BrowserWindow.prototype, BaseWindow.prototype);
@@ -36,6 +37,33 @@ BrowserWindow.prototype._init = function (this: BWT) {
     app.emit('browser-window-focus', event, this);
   });
 
+  let unresponsiveEvent: NodeJS.Timeout | null = null;
+  const emitUnresponsiveEvent = () => {
+    unresponsiveEvent = null;
+    if (!this.isDestroyed() && this.isEnabled()) { this.emit('unresponsive'); }
+  };
+  this.webContents.on('unresponsive', () => {
+    if (!unresponsiveEvent) { unresponsiveEvent = setTimeout(emitUnresponsiveEvent, 50); }
+  });
+  this.webContents.on('responsive', () => {
+    if (unresponsiveEvent) {
+      clearTimeout(unresponsiveEvent);
+      unresponsiveEvent = null;
+    }
+    this.emit('responsive');
+  });
+  this.on('close', (event) => {
+    queueMicrotask(() => {
+      if (!unresponsiveEvent && !event?.defaultPrevented) {
+        unresponsiveEvent = setTimeout(emitUnresponsiveEvent, 5000);
+      }
+    });
+  });
+  this.webContents.on('destroyed', () => {
+    if (unresponsiveEvent) clearTimeout(unresponsiveEvent);
+    unresponsiveEvent = null;
+  });
+
   // Subscribe to visibilityState changes and pass to renderer process.
   let isVisible = this.isVisible() && !this.isMinimized();
   const visibilityChanged = () => {
@@ -54,7 +82,7 @@ BrowserWindow.prototype._init = function (this: BWT) {
 
   this._browserViews = [];
 
-  this.on('close', () => {
+  this.on('closed', () => {
     this._browserViews.forEach(b => b.webContents?.close({ waitForBeforeUnload: true }));
   });
 
@@ -98,10 +126,6 @@ BrowserWindow.fromWebContents = (webContents: WebContents) => {
 
 BrowserWindow.fromBrowserView = (browserView: BrowserView) => {
   return BrowserWindow.fromWebContents(browserView.webContents);
-};
-
-BrowserWindow.prototype.setTouchBar = function (touchBar) {
-  (TouchBar as any)._setOnWindow(touchBar, this);
 };
 
 // Forwarded to webContents:
@@ -175,7 +199,14 @@ BrowserWindow.prototype.setBackgroundThrottling = function (allowed: boolean) {
 };
 
 BrowserWindow.prototype.addBrowserView = function (browserView: BrowserView) {
-  if (browserView.ownerWindow) { browserView.ownerWindow.removeBrowserView(browserView); }
+  if (this._browserViews.includes(browserView)) {
+    return;
+  }
+
+  const ownerWindow = browserView.ownerWindow;
+  if (ownerWindow && ownerWindow !== this) {
+    ownerWindow.removeBrowserView(browserView);
+  }
   this.contentView.addChildView(browserView.webContentsView);
   browserView.ownerWindow = this;
   browserView.webContents._setOwnerWindow(this);
@@ -199,7 +230,9 @@ BrowserWindow.prototype.removeBrowserView = function (browserView: BrowserView) 
 };
 
 BrowserWindow.prototype.getBrowserView = function () {
-  if (this._browserViews.length > 1) { throw new Error('This BrowserWindow has multiple BrowserViews, use getBrowserViews() instead'); }
+  if (this._browserViews.length > 1) {
+    throw new Error('This BrowserWindow has multiple BrowserViews - use getBrowserViews() instead');
+  }
   return this._browserViews[0] ?? null;
 };
 
@@ -208,8 +241,15 @@ BrowserWindow.prototype.getBrowserViews = function () {
 };
 
 BrowserWindow.prototype.setTopBrowserView = function (browserView: BrowserView) {
-  if (browserView.ownerWindow !== this) { throw new Error('Given BrowserView is not attached to the window'); }
-  this.addBrowserView(browserView);
+  if (browserView.ownerWindow !== this) {
+    throw new Error('Given BrowserView is not attached to the window');
+  }
+  const idx = this._browserViews.indexOf(browserView);
+  if (idx >= 0) {
+    this.contentView.addChildView(browserView.webContentsView);
+    this._browserViews.splice(idx, 1);
+    this._browserViews.push(browserView);
+  }
 };
 
 module.exports = BrowserWindow;

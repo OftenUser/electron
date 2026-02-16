@@ -8,7 +8,6 @@
 
 #include "base/i18n/number_formatting.h"
 #include "base/strings/utf_string_conversions.h"
-#include "build/build_config.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
@@ -67,7 +66,7 @@ void BadgeManager::BindServiceWorkerReceiver(
                                 std::move(context));
 }
 
-std::string BadgeManager::GetBadgeString(absl::optional<int> badge_content) {
+std::string BadgeManager::GetBadgeString(std::optional<int> badge_content) {
   if (!badge_content)
     return "•";
 
@@ -87,9 +86,9 @@ void BadgeManager::SetBadge(blink::mojom::BadgeValuePtr mojo_value) {
     return;
   }
 
-  absl::optional<int> value =
-      mojo_value->is_flag() ? absl::nullopt
-                            : absl::make_optional(mojo_value->get_number());
+  std::optional<int> value = mojo_value->is_flag()
+                                 ? std::nullopt
+                                 : std::make_optional(mojo_value->get_number());
 
   electron::Browser::Get()->SetBadgeCount(value);
 }

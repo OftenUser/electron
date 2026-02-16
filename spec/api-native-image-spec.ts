@@ -1,7 +1,11 @@
-import { expect } from 'chai';
 import { nativeImage } from 'electron/common';
-import { ifdescribe, ifit } from './lib/spec-helpers';
+
+import { expect } from 'chai';
+
 import * as path from 'node:path';
+
+import { ifdescribe, ifit, itremote, useRemoteContext } from './lib/spec-helpers';
+import { expectDeprecationMessages } from './lib/warning-helpers';
 
 describe('nativeImage module', () => {
   const fixturesPath = path.join(__dirname, 'fixtures');
@@ -12,19 +16,19 @@ describe('nativeImage module', () => {
     height: 190
   };
   const image1x1 = {
-    dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQYlWNgAAIAAAUAAdafFs0AAAAASUVORK5CYII=',
+    dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR4nGJhAAIAAAAA//8MRDDqAAAABklEQVQDAAAZAAXV/wceAAAAAElFTkSuQmCC',
     path: path.join(fixturesPath, 'assets', '1x1.png'),
     height: 1,
     width: 1
   };
   const image2x2 = {
-    dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVQYlWP8//8/AwMDEwMDAwMDAwAkBgMBBMzldwAAAABJRU5ErkJggg==',
+    dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGL5//8/AwMDCwMYAAAAAP//fpSNxQAAAAZJREFUAwAkPgMGdYltawAAAABJRU5ErkJggg==',
     path: path.join(fixturesPath, 'assets', '2x2.jpg'),
     height: 2,
     width: 2
   };
   const image3x3 = {
-    dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAAADElEQVQYlWNgIAoAAAAnAAGZWEMnAAAAAElFTkSuQmCC',
+    dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAMAAAADCAYAAABWKLW/AAABCWlDQ1BfAAB4nJWQsUrDUBSGv6oggqCDg4PDHVyVakEcnKoQXGOE6pbEGIUkDUlKVxdxFsRZxGfQBxFdXPoIDuLsfxswXTr0XM49H+f+nPtzoDVCsdCGNKsK1+ma3tm5WRzR0hmHH5Y500Oq389a+77F7LF0EZWh6rfSK/S5Rh6J1+Kae5aDmhPLwyqvxDeWC889FD+IV+MJDiY4zAurfxEfpMkgbHyzHGWnJ6r7yg1KXBy6GN0+KQMq8ZBr1SvRLttKg0eh90z6SyKsZVOP7D9p1A/M3ze94BHe7mD9q+ltPsPKLbx+NL1mh7lf+P/bmet0png2Y88OfZ2YRE4Mx3IVyqX12maHvT9v1kU+i+h9qQAAAA9JREFUeJxiYUACLDg5AAAAAP//htosgQAAAAZJREFUAwABXwANF48ZOwAAAABJRU5ErkJggg==',
     path: path.join(fixturesPath, 'assets', '3x3.png'),
     height: 3,
     width: 3
@@ -75,15 +79,20 @@ describe('nativeImage module', () => {
   });
 
   describe('createEmpty()', () => {
-    it('returns an empty image', () => {
+    it('returns an empty image', async () => {
       const empty = nativeImage.createEmpty();
       expect(empty.isEmpty()).to.be.true();
       expect(empty.getAspectRatio()).to.equal(1);
       expect(empty.toDataURL()).to.equal('data:image/png;base64,');
       expect(empty.toDataURL({ scaleFactor: 2.0 })).to.equal('data:image/png;base64,');
       expect(empty.getSize()).to.deep.equal({ width: 0, height: 0 });
-      expect(empty.getBitmap()).to.be.empty();
-      expect(empty.getBitmap({ scaleFactor: 2.0 })).to.be.empty();
+      await expectDeprecationMessages(
+        () => {
+          expect(empty.getBitmap()).to.be.empty();
+          expect(empty.getBitmap({ scaleFactor: 2.0 })).to.be.empty();
+        },
+        'getBitmap() is deprecated, use toBitmap() instead.'
+      );
       expect(empty.toBitmap()).to.be.empty();
       expect(empty.toBitmap({ scaleFactor: 2.0 })).to.be.empty();
       expect(empty.toJPEG(100)).to.be.empty();
@@ -177,7 +186,8 @@ describe('nativeImage module', () => {
 
     it('returns an image created from the given string', () => {
       for (const imageData of dataUrlImages) {
-        const imageFromPath = nativeImage.createFromPath(imageData.path);
+        const imageFromPath = nativeImage.createFromBuffer(
+          nativeImage.createFromPath(imageData.path).toPNG());
         const imageFromDataUrl = nativeImage.createFromDataURL(imageData.dataUrl!);
 
         expect(imageFromDataUrl.isEmpty()).to.be.false();
@@ -192,7 +202,8 @@ describe('nativeImage module', () => {
   describe('toDataURL()', () => {
     it('returns a PNG data URL', () => {
       for (const imageData of dataUrlImages) {
-        const imageFromPath = nativeImage.createFromPath(imageData.path!);
+        const imageFromPath = nativeImage.createFromBuffer(
+          nativeImage.createFromPath(imageData.path!).toPNG());
 
         const scaleFactors = [1.0, 2.0];
         for (const scaleFactor of scaleFactors) {
@@ -337,6 +348,11 @@ describe('nativeImage module', () => {
       expect(image.isEmpty()).to.be.false();
     });
 
+    ifit(process.platform === 'darwin')('returns a valid named symbol on darwin', function () {
+      const image = nativeImage.createFromNamedImage('atom');
+      expect(image.isEmpty()).to.be.false();
+    });
+
     ifit(process.platform === 'darwin')('returns allows an HSL shift for a valid image on darwin', function () {
       const image = nativeImage.createFromNamedImage('NSActionTemplate', [0.5, 0.2, 0.8]);
       expect(image.isEmpty()).to.be.false();
@@ -424,6 +440,8 @@ describe('nativeImage module', () => {
   });
 
   ifdescribe(process.platform !== 'linux')('createThumbnailFromPath(path, size)', () => {
+    useRemoteContext({ webPreferences: { contextIsolation: false, nodeIntegration: true } });
+
     it('throws when invalid size is passed', async () => {
       const badSize = { width: -1, height: -1 };
 
@@ -471,6 +489,13 @@ describe('nativeImage module', () => {
       const result = await nativeImage.createThumbnailFromPath(imgPath, maxSize);
       expect(result.getSize()).to.deep.equal(maxSize);
     });
+
+    itremote('works in the renderer', async (path: string) => {
+      const { nativeImage } = require('electron');
+      const goodSize = { width: 100, height: 100 };
+      const result = await nativeImage.createThumbnailFromPath(path, goodSize);
+      expect(result.isEmpty()).to.equal(false);
+    }, [path.join(fixturesPath, 'assets', 'logo.png')]);
   });
 
   describe('addRepresentation()', () => {

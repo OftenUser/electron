@@ -5,6 +5,7 @@
 #include "shell/browser/ui/file_dialog.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -18,13 +19,16 @@
 #include "base/strings/sys_string_conversions.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "electron/mas.h"
 #include "shell/browser/native_window.h"
 #include "shell/common/gin_converters/file_path_converter.h"
+#include "shell/common/gin_helper/dictionary.h"
+#include "shell/common/gin_helper/promise.h"
 #include "shell/common/thread_restrictions.h"
 
 @interface PopUpButtonHandler : NSObject
 
-@property(nonatomic, assign) NSSavePanel* savePanel;
+@property(nonatomic, weak) NSSavePanel* savePanel;
 @property(nonatomic, strong) NSArray* fileTypesList;
 
 - (instancetype)initWithPanel:(NSSavePanel*)panel
@@ -54,12 +58,14 @@
   NSArray* list = [self fileTypesList];
   NSArray* fileTypes = [list objectAtIndex:selectedItemIndex];
 
-  // If we meet a '*' file extension, we allow all the file types and no
-  // need to set the specified file types.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  // If we meet a '*' file extension, we allow all file types.
   if ([fileTypes count] == 0 || [fileTypes containsObject:@"*"])
     [[self savePanel] setAllowedFileTypes:nil];
   else
     [[self savePanel] setAllowedFileTypes:fileTypes];
+#pragma clang diagnostic pop
 }
 
 @end
@@ -99,6 +105,7 @@ void SetAllowedFileTypes(NSSavePanel* dialog, const Filters& filters) {
     NSMutableOrderedSet* file_type_set =
         [NSMutableOrderedSet orderedSetWithCapacity:filters.size()];
     [filter_names addObject:@(filter.first.c_str())];
+
     for (std::string ext : filter.second) {
       // macOS is incapable of understanding multiple file extensions,
       // so we need to tokenize the extension that's been passed in.
@@ -111,6 +118,7 @@ void SetAllowedFileTypes(NSSavePanel* dialog, const Filters& filters) {
 
       [file_type_set addObject:@(ext.c_str())];
     }
+
     [file_types_list addObject:[file_type_set array]];
   }
 
@@ -124,7 +132,11 @@ void SetAllowedFileTypes(NSSavePanel* dialog, const Filters& filters) {
     if ([file_types count] == 0 || [file_types containsObject:@"*"])
       file_types = nil;
   }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   [dialog setAllowedFileTypes:file_types];
+#pragma clang diagnostic pop
 
   if (count <= 1)
     return;  // don't add file format picker
@@ -299,9 +311,10 @@ void ReadDialogPathsWithBookmarks(NSOpenPanel* dialog,
       BOOL exists =
           [[NSFileManager defaultManager] fileExistsAtPath:path
                                                isDirectory:&is_directory];
-      BOOL is_package =
-          [[NSWorkspace sharedWorkspace] isFilePackageAtPath:path];
-      if (!exists || !is_directory || is_package)
+      BOOL is_package_as_directory =
+          [[NSWorkspace sharedWorkspace] isFilePackageAtPath:path] &&
+          [dialog treatsFilePackagesAsDirectories];
+      if (!exists || !(is_directory || is_package_as_directory))
         continue;
     }
 
@@ -416,19 +429,18 @@ void ShowOpenDialog(const DialogSettings& settings,
   }
 }
 
-bool ShowSaveDialogSync(const DialogSettings& settings, base::FilePath* path) {
-  DCHECK(path);
+std::optional<base::FilePath> ShowSaveDialogSync(
+    const DialogSettings& settings) {
   NSSavePanel* dialog = [NSSavePanel savePanel];
 
   SetupDialog(dialog, settings);
   SetupSaveDialogForProperties(dialog, settings.properties);
 
-  int chosen = RunModalDialog(dialog, settings);
+  const int chosen = RunModalDialog(dialog, settings);
   if (chosen == NSModalResponseCancel || ![[dialog URL] isFileURL])
-    return false;
+    return {};
 
-  *path = base::FilePath(base::SysNSStringToUTF8([[dialog URL] path]));
-  return true;
+  return base::FilePath{base::SysNSStringToUTF8([[dialog URL] path])};
 }
 
 void SaveDialogCompletion(int chosen,
@@ -441,7 +453,7 @@ void SaveDialogCompletion(int chosen,
     dict.Set("canceled", true);
     dict.Set("filePath", base::FilePath());
 #if IS_MAS_BUILD()
-    dict.Set("bookmark", base::StringPiece());
+    dict.Set("bookmark", std::string_view{});
 #endif
   } else {
     std::string path = base::SysNSStringToUTF8([[dialog URL] path]);

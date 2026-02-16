@@ -98,7 +98,7 @@ either `process.env` or the `window` object.
 You should at least follow these steps to improve the security of your application:
 
 1. [Only load secure content](#1-only-load-secure-content)
-2. [Disable the Node.js integration in all renderers that display remote content](#2-do-not-enable-nodejs-integration-for-remote-content)
+2. [Do not enable Node.js integration for remote content](#2-do-not-enable-nodejs-integration-for-remote-content)
 3. [Enable context isolation in all renderers](#3-enable-context-isolation)
 4. [Enable process sandboxing](#4-enable-process-sandboxing)
 5. [Use `ses.setPermissionRequestHandler()` in all sessions that load remote content](#5-handle-session-permission-requests-from-remote-content)
@@ -114,13 +114,9 @@ You should at least follow these steps to improve the security of your applicati
 15. [Do not use `shell.openExternal` with untrusted content](#15-do-not-use-shellopenexternal-with-untrusted-content)
 16. [Use a current version of Electron](#16-use-a-current-version-of-electron)
 17. [Validate the `sender` of all IPC messages](#17-validate-the-sender-of-all-ipc-messages)
-
-To automate the detection of misconfigurations and insecure patterns, it is
-possible to use
-[Electronegativity](https://github.com/doyensec/electronegativity). For
-additional details on potential weaknesses and implementation bugs when
-developing applications using Electron, please refer to this [guide for
-developers and auditors](https://doyensec.com/resources/us-17-Carettoni-Electronegativity-A-Study-Of-Electron-Security-wp.pdf).
+18. [Avoid usage of the `file://` protocol and prefer usage of custom protocols](#18-avoid-usage-of-the-file-protocol-and-prefer-usage-of-custom-protocols)
+19. [Check which fuses you can change](#19-check-which-fuses-you-can-change)
+20. [Do not expose Electron APIs to untrusted web content](#20-do-not-expose-electron-apis-to-untrusted-web-content)
 
 ### 1. Only load secure content
 
@@ -227,7 +223,7 @@ API to remotely loaded content via the [contextBridge API](../api/context-bridge
 ### 3. Enable Context Isolation
 
 :::info
-This recommendation is the default behavior in Electron since 12.0.0.
+Context Isolation is the default behavior in Electron since 12.0.0.
 :::
 
 Context isolation is an Electron feature that allows developers to run code
@@ -241,12 +237,26 @@ to enable this behavior.
 Even when `nodeIntegration: false` is used, to truly enforce strong isolation
 and prevent the use of Node primitives `contextIsolation` **must** also be used.
 
+Beware that _disabling context isolation_ for a renderer process by setting
+`nodeIntegration: true` _also disables process sandboxing_ for that process.
+See section below.
+
 :::info
 For more information on what `contextIsolation` is and how to enable it please
 see our dedicated [Context Isolation](context-isolation.md) document.
-:::info
+:::
 
 ### 4. Enable process sandboxing
+
+:::info
+This recommendation is the default behavior in Electron since 20.0.0.
+
+Additionally, process sandboxing can be enforced for all renderer processes
+application wide: [Enabling the sandbox globally](sandbox.md#enabling-the-sandbox-globally)
+
+_Disabling context isolation_ (see above) _also disables process sandboxing_,
+regardless of the default, `sandbox: false` or globally enabled sandboxing!
+:::
 
 [Sandboxing](https://chromium.googlesource.com/chromium/src/+/HEAD/docs/design/sandbox.md)
 is a Chromium feature that uses the operating system to
@@ -257,7 +267,7 @@ content in an unsandboxed process, including the main process, is not advised.
 :::info
 For more information on what Process Sandboxing is and how to enable it please
 see our dedicated [Process Sandboxing](sandbox.md) document.
-:::info
+:::
 
 ### 5. Handle session permission requests from remote content
 
@@ -278,10 +288,11 @@ security-conscious developers might want to assume the very opposite.
 
 ```js title='main.js (Main Process)'
 const { session } = require('electron')
-const { URL } = require('url')
+
+const { URL } = require('node:url')
 
 session
-  .fromPartition('some-partition')
+  .defaultSession
   .setPermissionRequestHandler((webContents, permission, callback) => {
     const parsedUrl = new URL(webContents.getURL())
 
@@ -297,6 +308,8 @@ session
     }
   })
 ```
+
+Note: `session.defaultSession` is only available after `app.whenReady` is called.
 
 ### 6. Do not disable `webSecurity`
 
@@ -387,6 +400,8 @@ session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
   })
 })
 ```
+
+Note: `session.defaultSession` is only available after `app.whenReady` is called.
 
 #### CSP meta tag
 
@@ -608,8 +623,9 @@ sometimes be fooled - a `startsWith('https://example.com')` test would let
 `https://example.com.attacker.com` through.
 
 ```js title='main.js (Main Process)'
-const { URL } = require('url')
 const { app } = require('electron')
+
+const { URL } = require('node:url')
 
 app.on('web-contents-created', (event, contents) => {
   contents.on('will-navigate', (event, navigationUrl) => {
@@ -642,8 +658,8 @@ windows at runtime.
 
 #### How?
 
-[`webContents`][web-contents] will delegate to its [window open
-handler][window-open-handler] before creating new windows. The handler will
+[`webContents`][web-contents] will delegate to its
+[window open handler][window-open-handler] before creating new windows. The handler will
 receive, amongst other parameters, the `url` the window was requested to open
 and the options used to create it. We recommend that you register a handler to
 monitor the creation of windows, and deny any unexpected window creation.
@@ -687,12 +703,14 @@ leveraged to execute arbitrary commands.
 ```js title='main.js (Main Process)' @ts-type={USER_CONTROLLED_DATA_HERE:string}
 //  Bad
 const { shell } = require('electron')
+
 shell.openExternal(USER_CONTROLLED_DATA_HERE)
 ```
 
 ```js title='main.js (Main Process)'
 //  Good
 const { shell } = require('electron')
+
 shell.openExternal('https://example.com/index.html')
 ```
 
@@ -779,6 +797,70 @@ set of files.
 
 Follow the [`protocol.handle`](../api/protocol.md#protocolhandlescheme-handler) examples to
 learn how to serve files / content from a custom protocol.
+
+### 19. Check which fuses you can change
+
+Electron ships with a number of options that can be useful but a large portion of
+applications probably don't need. In order to avoid having to build your own version of
+Electron, these can be turned off or on using [Fuses](./fuses.md).
+
+#### Why?
+
+Some fuses, like `runAsNode` and `nodeCliInspect`, allow the application to behave differently
+when run from the command line using specific environment variables or CLI arguments. These
+can be used to execute commands on the device through your application.
+
+This can let external scripts run commands that they potentially would not be allowed to, but
+that your application might have the rights for.
+
+#### How?
+
+[`@electron/fuses`](https://npmjs.com/package/@electron/fuses) is a module we made to make
+flipping these fuses easy. Check out the README of that module for more details on usage and
+potential error cases, and refer to
+[How do I flip fuses?](./fuses.md#how-do-i-flip-fuses) in our documentation.
+
+### 20. Do not expose Electron APIs to untrusted web content
+
+You should not directly expose Electron's APIs, especially IPC, to untrusted web content in your
+preload scripts.
+
+#### Why?
+
+Exposing raw APIs like `ipcRenderer.on` is dangerous because it gives renderer processes direct
+access to the entire IPC event system, allowing them to listen for any IPC events, not just the ones
+intended for them.
+
+To avoid that exposure, we also cannot pass callbacks directly through: The first
+argument to IPC event callbacks is an `IpcRendererEvent` object, which includes properties like `sender`
+that provide access to the underlying `ipcRenderer` instance. Even if you only listen for specific
+events, passing the callback directly means the renderer gets access to this event object.
+
+In short, we want the untrusted web content to only have access to necessary information and APIs.
+
+#### How?
+
+```js title='preload'.js'
+// Bad
+contextBridge.exposeInMainWorld('electronAPI', {
+  on: ipcRenderer.on
+})
+
+// Also bad
+contextBridge.exposeInMainWorld('electronAPI', {
+  onUpdateCounter: (callback) => ipcRenderer.on('update-counter', callback)
+})
+
+// Good
+contextBridge.exposeInMainWorld('electronAPI', {
+  onUpdateCounter: (callback) => ipcRenderer.on('update-counter', (_event, value) => callback(value))
+})
+```
+
+:::info
+For more information on what `contextIsolation` is and how to use it to secure your app,
+please see the [Context Isolation](context-isolation.md) document.
+:::
 
 [breaking-changes]: ../breaking-changes.md
 [browser-window]: ../api/browser-window.md

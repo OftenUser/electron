@@ -8,19 +8,22 @@
 
 #include <string>
 
-#include "base/files/file_path.h"
+namespace base {
+class FilePath;
+}
 
 namespace electron {
 
 class InspectableWebContentsDelegate {
  public:
-  virtual ~InspectableWebContentsDelegate() {}
+  virtual ~InspectableWebContentsDelegate() = default;
 
   // Requested by WebContents of devtools.
   virtual void DevToolsReloadPage() {}
   virtual void DevToolsSaveToFile(const std::string& url,
                                   const std::string& content,
-                                  bool save_as) {}
+                                  bool save_as,
+                                  bool is_base64) {}
   virtual void DevToolsAppendToFile(const std::string& url,
                                     const std::string& content) {}
   virtual void DevToolsRequestFileSystems() {}
@@ -32,6 +35,7 @@ class InspectableWebContentsDelegate {
                                  const std::string& file_system_path,
                                  const std::string& excluded_folders) {}
   virtual void DevToolsOpenInNewTab(const std::string& url) {}
+  virtual void DevToolsOpenSearchResultsInNewTab(const std::string& query) {}
   virtual void DevToolsStopIndexing(int request_id) {}
   virtual void DevToolsSearchInPath(int request_id,
                                     const std::string& file_system_path,

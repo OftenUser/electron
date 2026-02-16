@@ -2,8 +2,10 @@
 // Use of this source code is governed by the MIT license that can be
 // found in the LICENSE file.
 
+#include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/files/file_util.h"
@@ -11,15 +13,16 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/trace_event/trace_config.h"
 #include "content/public/browser/tracing_controller.h"
+#include "shell/browser/javascript_environment.h"
 #include "shell/common/gin_converters/callback_converter.h"
 #include "shell/common/gin_converters/file_path_converter.h"
 #include "shell/common/gin_converters/value_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/gin_helper/promise.h"
 #include "shell/common/node_includes.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 using content::TracingController;
+using namespace std::literals;
 
 namespace gin {
 
@@ -42,7 +45,7 @@ struct Converter<base::trace_event::TraceConfig> {
       }
     }
 
-    base::Value::Dict memory_dump_config;
+    base::DictValue memory_dump_config;
     if (ConvertFromV8(isolate, val, &memory_dump_config)) {
       *out = base::trace_event::TraceConfig(std::move(memory_dump_config));
       return true;
@@ -58,20 +61,20 @@ namespace {
 
 using CompletionCallback = base::OnceCallback<void(const base::FilePath&)>;
 
-absl::optional<base::FilePath> CreateTemporaryFileOnIO() {
+std::optional<base::FilePath> CreateTemporaryFileOnIO() {
   base::FilePath temp_file_path;
   if (!base::CreateTemporaryFile(&temp_file_path))
-    return absl::nullopt;
-  return absl::make_optional(std::move(temp_file_path));
+    return std::nullopt;
+  return std::make_optional(std::move(temp_file_path));
 }
 
 void StopTracing(gin_helper::Promise<base::FilePath> promise,
-                 absl::optional<base::FilePath> file_path) {
+                 std::optional<base::FilePath> file_path) {
   auto resolve_or_reject = base::BindOnce(
       [](gin_helper::Promise<base::FilePath> promise,
-         const base::FilePath& path, absl::optional<std::string> error) {
-        if (error) {
-          promise.RejectWithErrorMessage(error.value());
+         const base::FilePath& path, const std::string_view error) {
+        if (!std::empty(error)) {
+          promise.RejectWithErrorMessage(error);
         } else {
           promise.Resolve(path);
         }
@@ -81,31 +84,27 @@ void StopTracing(gin_helper::Promise<base::FilePath> promise,
   auto* instance = TracingController::GetInstance();
   if (!instance->IsTracing()) {
     std::move(resolve_or_reject)
-        .Run(absl::make_optional(
-            "Failed to stop tracing - no trace in progress"));
+        .Run("Failed to stop tracing - no trace in progress"sv);
   } else if (file_path) {
     auto split_callback = base::SplitOnceCallback(std::move(resolve_or_reject));
     auto endpoint = TracingController::CreateFileEndpoint(
-        *file_path,
-        base::BindOnce(std::move(split_callback.first), absl::nullopt));
+        *file_path, base::BindOnce(std::move(split_callback.first), ""sv));
     if (!instance->StopTracing(endpoint)) {
-      std::move(split_callback.second)
-          .Run(absl::make_optional("Failed to stop tracing"));
+      std::move(split_callback.second).Run("Failed to stop tracing"sv);
     }
   } else {
     std::move(resolve_or_reject)
-        .Run(absl::make_optional(
-            "Failed to create temporary file for trace data"));
+        .Run("Failed to create temporary file for trace data"sv);
   }
 }
 
-v8::Local<v8::Promise> StopRecording(gin_helper::Arguments* args) {
-  gin_helper::Promise<base::FilePath> promise(args->isolate());
+v8::Local<v8::Promise> StopRecording(gin::Arguments* const args) {
+  gin_helper::Promise<base::FilePath> promise{args->isolate()};
   v8::Local<v8::Promise> handle = promise.GetHandle();
 
   base::FilePath path;
   if (args->GetNext(&path) && !path.empty()) {
-    StopTracing(std::move(promise), absl::make_optional(path));
+    StopTracing(std::move(promise), std::make_optional(path));
   } else {
     // use a temporary file.
     base::ThreadPool::PostTaskAndReplyWithResult(
@@ -173,7 +172,8 @@ void Initialize(v8::Local<v8::Object> exports,
                 v8::Local<v8::Value> unused,
                 v8::Local<v8::Context> context,
                 void* priv) {
-  gin_helper::Dictionary dict(context->GetIsolate(), exports);
+  v8::Isolate* const isolate = electron::JavascriptEnvironment::GetIsolate();
+  gin_helper::Dictionary dict{isolate, exports};
   dict.SetMethod("getCategories", &GetCategories);
   dict.SetMethod("startRecording", &StartTracing);
   dict.SetMethod("stopRecording", &StopRecording);

@@ -11,7 +11,8 @@ namespace electron {
 
 class ElectronNavigationThrottle : public content::NavigationThrottle {
  public:
-  explicit ElectronNavigationThrottle(content::NavigationHandle* handle);
+  explicit ElectronNavigationThrottle(
+      content::NavigationThrottleRegistry& registry);
   ~ElectronNavigationThrottle() override;
 
   // disable copy
@@ -19,8 +20,8 @@ class ElectronNavigationThrottle : public content::NavigationThrottle {
   ElectronNavigationThrottle& operator=(const ElectronNavigationThrottle&) =
       delete;
 
+  // content::NavigationThrottle
   ElectronNavigationThrottle::ThrottleCheckResult WillStartRequest() override;
-
   ElectronNavigationThrottle::ThrottleCheckResult WillRedirectRequest()
       override;
 

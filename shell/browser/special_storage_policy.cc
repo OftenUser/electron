@@ -4,8 +4,6 @@
 
 #include "shell/browser/special_storage_policy.h"
 
-#include "base/functional/bind.h"
-#include "base/functional/callback.h"
 #include "services/network/public/cpp/session_cookie_delete_predicate.h"
 
 namespace electron {
@@ -22,7 +20,7 @@ bool SpecialStoragePolicy::IsStorageUnlimited(const GURL& origin) {
   return true;
 }
 
-bool SpecialStoragePolicy::IsStorageDurable(const GURL& origin) {
+bool SpecialStoragePolicy::IsStoragePersistent(const GURL& origin) {
   return true;
 }
 

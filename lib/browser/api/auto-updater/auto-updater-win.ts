@@ -1,6 +1,8 @@
-import { app } from 'electron/main';
-import { EventEmitter } from 'events';
 import * as squirrelUpdate from '@electron/internal/browser/api/auto-updater/squirrel-update-win';
+
+import { app } from 'electron/main';
+
+import { EventEmitter } from 'events';
 
 class AutoUpdater extends EventEmitter implements Electron.AutoUpdater {
   updateAvailable: boolean = false;
@@ -16,6 +18,11 @@ class AutoUpdater extends EventEmitter implements Electron.AutoUpdater {
 
   getFeedURL () {
     return this.updateURL ?? '';
+  }
+
+  getPackageInfo () {
+    // Squirrel-based Windows apps don't have MSIX package information
+    return undefined;
   }
 
   setFeedURL (options: { url: string } | string) {

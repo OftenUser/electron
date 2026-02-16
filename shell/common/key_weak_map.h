@@ -6,29 +6,22 @@
 #define ELECTRON_SHELL_COMMON_KEY_WEAK_MAP_H_
 
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
+#include "base/containers/to_vector.h"
 #include "base/memory/raw_ptr.h"
-#include "v8/include/v8.h"
+#include "v8/include/v8-forward.h"
 
 namespace electron {
 
-// Like ES6's WeakMap, but the key is Integer and the value is Weak Pointer.
+// Like ES6's WeakMap, with a K key and Weak Pointer value.
 template <typename K>
 class KeyWeakMap {
  public:
-  // Records the key and self, used by SetWeak.
-  struct KeyObject {
-    K key;
-    raw_ptr<KeyWeakMap> self;
-  };
-
-  KeyWeakMap() {}
-  virtual ~KeyWeakMap() {
+  KeyWeakMap() = default;
+  ~KeyWeakMap() {
     for (auto& p : map_)
-      p.second.second.ClearWeak();
+      p.second.value.ClearWeak();
   }
 
   // disable copy
@@ -36,53 +29,48 @@ class KeyWeakMap {
   KeyWeakMap& operator=(const KeyWeakMap&) = delete;
 
   // Sets the object to WeakMap with the given |key|.
-  void Set(v8::Isolate* isolate, const K& key, v8::Local<v8::Object> object) {
-    KeyObject key_object = {key, this};
-    auto& p = map_[key] =
-        std::make_pair(key_object, v8::Global<v8::Object>(isolate, object));
-    p.second.SetWeak(&(p.first), OnObjectGC, v8::WeakCallbackType::kParameter);
+  void Set(v8::Isolate* isolate, const K& key, v8::Local<v8::Object> value) {
+    auto& mapped = map_[key] =
+        Mapped{this, key, v8::Global<v8::Object>(isolate, value)};
+    mapped.value.SetWeak(&mapped, OnObjectGC, v8::WeakCallbackType::kParameter);
   }
 
   // Gets the object from WeakMap by its |key|.
   v8::MaybeLocal<v8::Object> Get(v8::Isolate* isolate, const K& key) {
-    auto iter = map_.find(key);
-    if (iter == map_.end())
-      return v8::MaybeLocal<v8::Object>();
-    else
-      return v8::Local<v8::Object>::New(isolate, iter->second.second);
+    if (auto iter = map_.find(key); iter != map_.end())
+      return v8::Local<v8::Object>::New(isolate, iter->second.value);
+    return {};
   }
-
-  // Whether there is an object with |key| in this WeakMap.
-  constexpr bool Has(const K& key) const { return base::Contains(map_, key); }
 
   // Returns all objects.
   std::vector<v8::Local<v8::Object>> Values(v8::Isolate* isolate) const {
-    std::vector<v8::Local<v8::Object>> keys;
-    keys.reserve(map_.size());
-    for (const auto& it : map_)
-      keys.emplace_back(v8::Local<v8::Object>::New(isolate, it.second.second));
-    return keys;
+    return base::ToVector(map_, [isolate](const auto& iter) {
+      return v8::Local<v8::Object>::New(isolate, iter.second.value);
+    });
   }
 
   // Remove object with |key| in the WeakMap.
   void Remove(const K& key) {
-    auto iter = map_.find(key);
-    if (iter == map_.end())
-      return;
-
-    iter->second.second.ClearWeak();
-    map_.erase(iter);
+    if (auto item = map_.extract(key))
+      item.mapped().value.ClearWeak();
   }
 
  private:
-  static void OnObjectGC(
-      const v8::WeakCallbackInfo<typename KeyWeakMap<K>::KeyObject>& data) {
-    KeyWeakMap<K>::KeyObject* key_object = data.GetParameter();
-    key_object->self->Remove(key_object->key);
+  // Records the key and self, used by SetWeak.
+  struct Mapped {
+    raw_ptr<KeyWeakMap> self;
+    K key;
+    v8::Global<v8::Object> value;
+  };
+
+  static void OnObjectGC(const v8::WeakCallbackInfo<Mapped>& data) {
+    auto* mapped = data.GetParameter();
+    mapped->self->Remove(mapped->key);
   }
 
   // Map of stored objects.
-  std::unordered_map<K, std::pair<KeyObject, v8::Global<v8::Object>>> map_;
+  // TODO(ckerr): can absl::flat_hash_map be used safely here?
+  std::unordered_map<K, Mapped> map_;
 };
 
 }  // namespace electron

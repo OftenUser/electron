@@ -7,9 +7,13 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "content/public/app/content_main_delegate.h"
-#include "content/public/common/content_client.h"
+
+namespace content {
+class Client;
+}
 
 namespace tracing {
 class TracingSamplerProfiler;
@@ -30,36 +34,36 @@ class ElectronMainDelegate : public content::ContentMainDelegate {
   ElectronMainDelegate(const ElectronMainDelegate&) = delete;
   ElectronMainDelegate& operator=(const ElectronMainDelegate&) = delete;
 
-  base::StringPiece GetBrowserV8SnapshotFilename() override;
-
- protected:
-  // content::ContentMainDelegate:
-  absl::optional<int> BasicStartupComplete() override;
-  void PreSandboxStartup() override;
-  void SandboxInitialized(const std::string& process_type) override;
-  absl::optional<int> PreBrowserMain() override;
-  content::ContentClient* CreateContentClient() override;
-  content::ContentBrowserClient* CreateContentBrowserClient() override;
-  content::ContentGpuClient* CreateContentGpuClient() override;
-  content::ContentRendererClient* CreateContentRendererClient() override;
-  content::ContentUtilityClient* CreateContentUtilityClient() override;
-  absl::variant<int, content::MainFunctionParams> RunProcess(
-      const std::string& process_type,
-      content::MainFunctionParams main_function_params) override;
-  bool ShouldCreateFeatureList(InvokedIn invoked_in) override;
-  bool ShouldInitializeMojo(InvokedIn invoked_in) override;
-  bool ShouldLockSchemeRegistry() override;
-#if BUILDFLAG(IS_LINUX)
-  void ZygoteForked() override;
-#endif
-
- private:
 #if BUILDFLAG(IS_MAC)
   void OverrideChildProcessPath();
   void OverrideFrameworkBundlePath();
   void SetUpBundleOverrides();
 #endif
 
+ protected:
+  // content::ContentMainDelegate:
+  std::string_view GetBrowserV8SnapshotFilename() override;
+  std::optional<int> BasicStartupComplete() override;
+  void PreSandboxStartup() override;
+  void SandboxInitialized(const std::string& process_type) override;
+  std::optional<int> PreBrowserMain() override;
+  content::ContentClient* CreateContentClient() override;
+  content::ContentBrowserClient* CreateContentBrowserClient() override;
+  content::ContentGpuClient* CreateContentGpuClient() override;
+  content::ContentRendererClient* CreateContentRendererClient() override;
+  content::ContentUtilityClient* CreateContentUtilityClient() override;
+  std::variant<int, content::MainFunctionParams> RunProcess(
+      const std::string& process_type,
+      content::MainFunctionParams main_function_params) override;
+  bool ShouldCreateFeatureList(InvokedIn invoked_in) override;
+  bool ShouldInitializeMojo(InvokedIn invoked_in) override;
+  bool ShouldLoadV8Snapshot(const std::string& process_type) override;
+  bool ShouldLockSchemeRegistry() override;
+#if BUILDFLAG(IS_LINUX)
+  void ZygoteForked() override;
+#endif
+
+ private:
   std::unique_ptr<content::ContentBrowserClient> browser_client_;
   std::unique_ptr<content::ContentClient> content_client_;
   std::unique_ptr<content::ContentGpuClient> gpu_client_;

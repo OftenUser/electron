@@ -10,10 +10,10 @@ them should they exist.
 This will be upstreamed.
 
 diff --git a/printing/printing_context_mac.h b/printing/printing_context_mac.h
-index 0b21e7034392efa28d69c0d092086ae9bd1c43c4..c5824bdbdfbfab1c221f6bca3517d5404e0286d5 100644
+index 8be4ca70ff71cfc33cd812ec0cc9ae8155538532..f7985331838387232b27e557e435113479dbb780 100644
 --- a/printing/printing_context_mac.h
 +++ b/printing/printing_context_mac.h
-@@ -84,6 +84,10 @@ class COMPONENT_EXPORT(PRINTING) PrintingContextMac : public PrintingContext {
+@@ -85,6 +85,10 @@ class COMPONENT_EXPORT(PRINTING) PrintingContextMac : public PrintingContext {
    // Returns true if the orientation was set.
    bool SetOrientationIsLandscape(bool landscape);
  
@@ -25,10 +25,10 @@ index 0b21e7034392efa28d69c0d092086ae9bd1c43c4..c5824bdbdfbfab1c221f6bca3517d540
    // Returns true if duplex mode is set.
    bool SetDuplexModeInPrintSettings(mojom::DuplexMode mode);
 diff --git a/printing/printing_context_mac.mm b/printing/printing_context_mac.mm
-index f40256615e1cef93b2677c0abcabe4574ec8d444..a752fd7461418938db71e7f3479455181523f5f7 100644
+index 4f15b217fcf8119f323e04596978c6710d73727a..7ffd6c873a4320c76605417819a8b71ffd9ced65 100644
 --- a/printing/printing_context_mac.mm
 +++ b/printing/printing_context_mac.mm
-@@ -486,7 +486,8 @@ void ApplySystemPrintDialogData(
+@@ -543,7 +543,8 @@ bool IsIppColorModelColorful(mojom::ColorModel color_model) {
          !SetCollateInPrintSettings(settings_->collate()) ||
          !SetDuplexModeInPrintSettings(settings_->duplex_mode()) ||
          !SetOutputColor(static_cast<int>(settings_->color())) ||
@@ -38,7 +38,7 @@ index f40256615e1cef93b2677c0abcabe4574ec8d444..a752fd7461418938db71e7f347945518
        return OnError();
      }
    }
-@@ -639,6 +640,22 @@ void ApplySystemPrintDialogData(
+@@ -696,6 +697,22 @@ bool IsIppColorModelColorful(mojom::ColorModel color_model) {
    return PMSetCopies(print_settings, copies, false) == noErr;
  }
  
@@ -62,28 +62,41 @@ index f40256615e1cef93b2677c0abcabe4574ec8d444..a752fd7461418938db71e7f347945518
    PMPrintSettings print_settings =
        static_cast<PMPrintSettings>([print_info_ PMPrintSettings]);
 diff --git a/printing/printing_context_system_dialog_win.cc b/printing/printing_context_system_dialog_win.cc
-index 391397cc4fb5748caa174fb061c7c128d079200d..3179af2283390849b5d6ff945f9f658e4e9bdb54 100644
+index f8e903f21cee7041dea67b479c298baf9093d719..ed5d59f29992b0925efd89cb0ac4b33a03a31788 100644
 --- a/printing/printing_context_system_dialog_win.cc
 +++ b/printing/printing_context_system_dialog_win.cc
-@@ -72,14 +72,28 @@ void PrintingContextSystemDialogWin::AskUserForSettings(
-   PRINTPAGERANGE ranges[32];
+@@ -4,10 +4,12 @@
+ 
+ #include "printing/printing_context_system_dialog_win.h"
+ 
++#include <algorithm>
+ #include <utility>
+ 
+ #include "base/auto_reset.h"
+ #include "base/compiler_specific.h"
++#include "base/containers/span.h"
+ #include "base/strings/utf_string_conversions.h"
+ #include "base/task/current_thread.h"
+ #include "printing/backend/win_helper.h"
+@@ -74,13 +76,28 @@ void PrintingContextSystemDialogWin::AskUserForSettings(
+   PRINTPAGERANGE ranges[32] = {};
    dialog_options.nStartPage = START_PAGE_GENERAL;
    if (max_pages) {
 -    // Default initialize to print all the pages.
-     memset(ranges, 0, sizeof(ranges));
 -    ranges[0].nFromPage = 1;
 -    ranges[0].nToPage = max_pages;
 -    dialog_options.nPageRanges = 1;
 -    dialog_options.nMaxPageRanges = std::size(ranges);
-+
-+    auto page_ranges = settings_->ranges();
-+    if (!page_ranges.empty()) {
-+      for (size_t i = 0; i < page_ranges.size(); i++) {
-+        auto range = page_ranges[i];
-+        ranges[i].nFromPage = range.from + 1;
-+        ranges[i].nToPage = range.to + 1;
-+      }
-+      dialog_options.nPageRanges = page_ranges.size();
++    if (const auto& src = settings_->ranges(); !src.empty()) {
++      const auto transform = [](const printing::PageRange& range) {
++        return PRINTPAGERANGE{
++          .nFromPage = range.from + 1U,
++          .nToPage = range.to + 1U
++        };
++      };
++      const size_t n_items = std::min(std::size(src), std::size(ranges));
++      std::ranges::transform(base::span(src).first(n_items), ranges, transform);
++      dialog_options.nPageRanges = n_items;
 +
 +      // Ensure the Pages radio button is selected.
 +      dialog_options.Flags |= PD_PAGENUMS;
@@ -100,29 +113,35 @@ index 391397cc4fb5748caa174fb061c7c128d079200d..3179af2283390849b5d6ff945f9f658e
    } else {
      // No need to bother, we don't know how many pages are available.
 diff --git a/ui/gtk/printing/print_dialog_gtk.cc b/ui/gtk/printing/print_dialog_gtk.cc
-index 9d9147427a99804c4ba071b27948c06caac4c477..e047f4a88612172d58802b3529f04061bf90a939 100644
+index 16c80d9ff00089ced6d65dc618316079b9204ba2..96fb7867eb92e19bc8513907124b2cfdaecc4c55 100644
 --- a/ui/gtk/printing/print_dialog_gtk.cc
 +++ b/ui/gtk/printing/print_dialog_gtk.cc
-@@ -241,6 +241,24 @@ void PrintDialogGtk::UpdateSettings(
+@@ -21,6 +21,7 @@
+ #include "base/memory/ptr_util.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/no_destructor.h"
++#include "base/numerics/safe_conversions.h"
+ #include "base/sequence_checker.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/utf_string_conversions.h"
+@@ -268,6 +269,22 @@ void PrintDialogGtk::UpdateSettings(
  
    gtk_print_settings_set_n_copies(gtk_settings_, settings->copies());
    gtk_print_settings_set_collate(gtk_settings_, settings->collate());
 +
-+  auto print_ranges = settings->ranges();
-+  if (!print_ranges.empty()) {
++  if (const auto& ranges = settings->ranges(); !ranges.empty()) {
 +    // Tell the system that we only intend to print a subset of pages.
++    std::vector<GtkPageRange> granges;
++    granges.reserve(ranges.size());
++    auto transform = [](const printing::PageRange& src) {
++      return GtkPageRange{
++        .start = base::ClampedNumeric<int>(src.from),
++        .end = base::ClampedNumeric<int>(src.to),
++      };
++    };
++    std::ranges::transform(ranges, std::back_inserter(granges), transform);
 +    gtk_print_settings_set_print_pages(gtk_settings_, GTK_PRINT_PAGES_RANGES);
-+
-+    GtkPageRange* ranges;
-+    ranges = g_new(GtkPageRange, print_ranges.size());
-+    for (size_t i = 0; i < print_ranges.size(); i++) {
-+      auto range = print_ranges[i];
-+      ranges[i].start = range.from;
-+      ranges[i].end = range.to;
-+    }
-+
-+    gtk_print_settings_set_page_ranges(gtk_settings_, ranges, 1);
-+    g_free(ranges);
++    gtk_print_settings_set_page_ranges(gtk_settings_, granges.data(), granges.size());
 +  }
 +
    if (settings->dpi_horizontal() > 0 && settings->dpi_vertical() > 0) {

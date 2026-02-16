@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/mac/mac_util.h"
+#include "base/task/single_thread_task_runner.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "shell/browser/browser.h"
 #include "shell/browser/native_window_mac.h"
@@ -18,8 +19,6 @@
 #include "ui/views/widget/native_widget_mac.h"
 
 using TitleBarStyle = electron::NativeWindowMac::TitleBarStyle;
-using FullScreenTransitionState =
-    electron::NativeWindow::FullScreenTransitionState;
 
 @implementation ElectronNSWindowDelegate
 
@@ -76,7 +75,7 @@ using FullScreenTransitionState =
 - (NSRect)windowWillUseStandardFrame:(NSWindow*)window
                         defaultFrame:(NSRect)frame {
   if (!shell_->zoom_to_page_width()) {
-    if (shell_->GetAspectRatio() > 0.0)
+    if (shell_->aspect_ratio() > 0.0)
       shell_->set_default_frame_for_zoom(frame);
     return frame;
   }
@@ -104,7 +103,7 @@ using FullScreenTransitionState =
   // Set the width. Don't touch y or height.
   frame.size.width = zoomed_width;
 
-  if (shell_->GetAspectRatio() > 0.0)
+  if (shell_->aspect_ratio() > 0.0)
     shell_->set_default_frame_for_zoom(frame);
 
   return frame;
@@ -139,13 +138,12 @@ using FullScreenTransitionState =
 
 - (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
   NSSize newSize = frameSize;
-  double aspectRatio = shell_->GetAspectRatio();
   NSWindow* window = shell_->GetNativeWindow().GetNativeNSWindow();
 
-  if (aspectRatio > 0.0) {
-    gfx::Size windowSize = shell_->GetSize();
-    gfx::Size contentSize = shell_->GetContentSize();
-    gfx::Size extraSize = shell_->GetAspectRatioExtraSize();
+  if (const double aspectRatio = shell_->aspect_ratio(); aspectRatio > 0.0) {
+    const gfx::Size windowSize = shell_->GetSize();
+    const gfx::Size contentSize = shell_->GetContentSize();
+    const gfx::Size extraSize = shell_->aspect_ratio_extra_size();
 
     double titleBarHeight = windowSize.height() - contentSize.height();
     double extraWidthPlusFrame =
@@ -222,6 +220,12 @@ using FullScreenTransitionState =
   [super windowDidResize:notification];
   shell_->NotifyWindowResize();
   shell_->RedrawTrafficLights();
+  // When reduce motion is enabled windowDidResize is only called once after
+  // a resize and windowDidEndLiveResize is not called. So we need to call
+  // handleZoomEnd here as well.
+  if (NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion) {
+    [self handleZoomEnd];
+  }
 }
 
 - (void)windowWillMove:(NSNotification*)notification {
@@ -277,9 +281,7 @@ using FullScreenTransitionState =
   return YES;
 }
 
-- (void)windowDidEndLiveResize:(NSNotification*)notification {
-  resizingHorizontally_.reset();
-  shell_->NotifyWindowResized();
+- (void)handleZoomEnd {
   if (is_zooming_) {
     if (shell_->IsMaximized())
       shell_->NotifyWindowMaximize();
@@ -289,20 +291,30 @@ using FullScreenTransitionState =
   }
 }
 
+- (void)windowDidEndLiveResize:(NSNotification*)notification {
+  resizingHorizontally_.reset();
+  shell_->NotifyWindowResized();
+  [self handleZoomEnd];
+}
+
 - (void)windowWillEnterFullScreen:(NSNotification*)notification {
   // Store resizable mask so it can be restored after exiting fullscreen.
   is_resizable_ = shell_->HasStyleMask(NSWindowStyleMaskResizable);
+  // Store borderless mask so it can be restored after exiting fullscreen.
+  is_borderless_ = !shell_->HasStyleMask(NSWindowStyleMaskTitled);
 
-  shell_->set_fullscreen_transition_state(FullScreenTransitionState::kEntering);
+  shell_->set_is_transitioning_fullscreen(true);
 
   shell_->NotifyWindowWillEnterFullScreen();
 
   // Set resizable to true before entering fullscreen.
   shell_->SetResizable(true);
+  // Set borderless to false before entering fullscreen.
+  shell_->SetBorderless(false);
 }
 
 - (void)windowDidEnterFullScreen:(NSNotification*)notification {
-  shell_->set_fullscreen_transition_state(FullScreenTransitionState::kNone);
+  shell_->set_is_transitioning_fullscreen(false);
 
   shell_->NotifyWindowEnterFullScreen();
 
@@ -312,16 +324,29 @@ using FullScreenTransitionState =
   shell_->HandlePendingFullscreenTransitions();
 }
 
+- (void)windowDidFailToEnterFullScreen:(NSWindow*)window {
+  shell_->set_is_transitioning_fullscreen(false);
+
+  shell_->SetResizable(is_resizable_);
+  shell_->NotifyWindowDidFailToEnterFullScreen();
+
+  if (shell_->HandleDeferredClose())
+    return;
+
+  shell_->HandlePendingFullscreenTransitions();
+}
+
 - (void)windowWillExitFullScreen:(NSNotification*)notification {
-  shell_->set_fullscreen_transition_state(FullScreenTransitionState::kExiting);
+  shell_->set_is_transitioning_fullscreen(true);
 
   shell_->NotifyWindowWillLeaveFullScreen();
 }
 
 - (void)windowDidExitFullScreen:(NSNotification*)notification {
-  shell_->set_fullscreen_transition_state(FullScreenTransitionState::kNone);
+  shell_->set_is_transitioning_fullscreen(false);
 
   shell_->SetResizable(is_resizable_);
+  shell_->SetBorderless(is_borderless_);
   shell_->NotifyWindowLeaveFullScreen();
 
   if (shell_->HandleDeferredClose())
@@ -354,6 +379,19 @@ using FullScreenTransitionState =
       shell_->GetNativeWindow());
   auto* bridged_view = bridge_host->GetInProcessNSWindowBridge();
   bridged_view->OnWindowWillClose();
+
+  // Native widget and its compositor have been destroyed upon close. We need
+  // to detach contents view in order to prevent reusing its layer without
+  // compositor in the `WebContentsViewMac::CreateViewForWidget`, leading to
+  // `DCHECK` failure in `BrowserCompositorMac::SetParentUiLayer`.
+  auto* contents_view =
+      static_cast<views::WidgetDelegate*>(shell_)->GetContentsView();
+  if (contents_view) {
+    auto* parent = contents_view->parent();
+    if (parent) {
+      parent->RemoveChildView(contents_view);
+    }
+  }
 }
 
 - (BOOL)windowShouldClose:(id)window {

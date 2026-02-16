@@ -13,14 +13,12 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
-#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/hang_watcher.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/platform_util.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
@@ -77,16 +75,8 @@ FileSelectHelper::~FileSelectHelper() {
     select_file_dialog_->ListenerDestroyed();
 }
 
-void FileSelectHelper::FileSelected(const base::FilePath& path,
-                                    int index,
-                                    void* params) {
-  FileSelectedWithExtraInfo(ui::SelectedFileInfo(path, path), index, params);
-}
-
-void FileSelectHelper::FileSelectedWithExtraInfo(
-    const ui::SelectedFileInfo& file,
-    int index,
-    void* params) {
+void FileSelectHelper::FileSelected(const ui::SelectedFileInfo& file,
+                                    int index) {
   if (!render_frame_host_) {
     RunFileChooserEnd();
     return;
@@ -101,21 +91,11 @@ void FileSelectHelper::FileSelectedWithExtraInfo(
   std::vector<ui::SelectedFileInfo> files;
   files.push_back(file);
 
-  MultiFilesSelectedWithExtraInfo(files, params);
+  MultiFilesSelected(files);
 }
 
 void FileSelectHelper::MultiFilesSelected(
-    const std::vector<base::FilePath>& files,
-    void* params) {
-  std::vector<ui::SelectedFileInfo> selected_files =
-      ui::FilePathListToSelectedFileInfoList(files);
-
-  MultiFilesSelectedWithExtraInfo(selected_files, params);
-}
-
-void FileSelectHelper::MultiFilesSelectedWithExtraInfo(
-    const std::vector<ui::SelectedFileInfo>& files,
-    void* params) {
+    const std::vector<ui::SelectedFileInfo>& files) {
 #if BUILDFLAG(IS_MAC)
   base::ThreadPool::PostTask(
       FROM_HERE,
@@ -126,7 +106,7 @@ void FileSelectHelper::MultiFilesSelectedWithExtraInfo(
 #endif  // BUILDFLAG(IS_MAC)
 }
 
-void FileSelectHelper::FileSelectionCanceled(void* params) {
+void FileSelectHelper::FileSelectionCanceled() {
   RunFileChooserEnd();
 }
 
@@ -167,7 +147,7 @@ void FileSelectHelper::OnListDone(int error) {
   std::unique_ptr<ActiveDirectoryEnumeration> entry =
       std::move(directory_enumeration_);
   if (error) {
-    FileSelectionCanceled(nullptr);
+    FileSelectionCanceled();
     return;
   }
 
@@ -179,8 +159,9 @@ void FileSelectHelper::OnListDone(int error) {
   } else {
     std::vector<FileChooserFileInfoPtr> chooser_files;
     for (const auto& file_path : entry->results_) {
-      chooser_files.push_back(FileChooserFileInfo::NewNativeFile(
-          blink::mojom::NativeFileInfo::New(file_path, std::u16string())));
+      chooser_files.push_back(
+          FileChooserFileInfo::NewNativeFile(blink::mojom::NativeFileInfo::New(
+              file_path, std::u16string(), std::vector<std::u16string>())));
     }
 
     listener_->FileSelected(std::move(chooser_files), base_dir_,
@@ -199,8 +180,8 @@ void FileSelectHelper::ConvertToFileChooserFileInfoList(
   for (const auto& file : files) {
     chooser_files.push_back(
         FileChooserFileInfo::NewNativeFile(blink::mojom::NativeFileInfo::New(
-            file.local_path,
-            base::FilePath(file.display_name).AsUTF16Unsafe())));
+            file.local_path, base::FilePath(file.display_name).AsUTF16Unsafe(),
+            std::vector<std::u16string>())));
   }
 
   PerformContentAnalysisIfNeeded(std::move(chooser_files));
@@ -260,14 +241,13 @@ void FileSelectHelper::SetFileSelectListenerForTesting(
 std::unique_ptr<ui::SelectFileDialog::FileTypeInfo>
 FileSelectHelper::GetFileTypesFromAcceptType(
     const std::vector<std::u16string>& accept_types) {
-  std::unique_ptr<ui::SelectFileDialog::FileTypeInfo> base_file_type(
-      new ui::SelectFileDialog::FileTypeInfo());
+  auto base_file_type = std::make_unique<ui::SelectFileDialog::FileTypeInfo>();
   if (accept_types.empty())
     return base_file_type;
 
   // Create FileTypeInfo and pre-allocate for the first extension list.
-  std::unique_ptr<ui::SelectFileDialog::FileTypeInfo> file_type(
-      new ui::SelectFileDialog::FileTypeInfo(*base_file_type));
+  auto file_type =
+      std::make_unique<ui::SelectFileDialog::FileTypeInfo>(*base_file_type);
   file_type->include_all_files = true;
   file_type->extensions.resize(1);
   std::vector<base::FilePath::StringType>* extensions =
@@ -550,7 +530,7 @@ bool FileSelectHelper::IsAcceptTypeValid(const std::string& accept_type) {
 base::FilePath FileSelectHelper::GetSanitizedFileName(
     const base::FilePath& suggested_filename) {
   if (suggested_filename.empty())
-    return base::FilePath();
+    return {};
   return net::GenerateFileName(
       GURL(), std::string(), std::string(), suggested_filename.AsUTF8Unsafe(),
       std::string(), l10n_util::GetStringUTF8(IDS_DEFAULT_DOWNLOAD_FILENAME));

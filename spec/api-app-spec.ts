@@ -1,19 +1,26 @@
+import { app, BrowserWindow, Menu, session, net as electronNet, WebContents, utilityProcess } from 'electron/main';
+
 import { assert, expect } from 'chai';
-import * as cp from 'node:child_process';
-import * as https from 'node:https';
-import * as http from 'node:http';
-import * as net from 'node:net';
-import * as fs from 'fs-extra';
-import * as path from 'node:path';
-import { promisify } from 'node:util';
-import { app, BrowserWindow, Menu, session, net as electronNet, WebContents } from 'electron/main';
-import { closeWindow, closeAllWindows } from './lib/window-helpers';
-import { ifdescribe, ifit, listen, waitUntil } from './lib/spec-helpers';
-import { once } from 'node:events';
-import split = require('split')
 import * as semver from 'semver';
 
+import * as cp from 'node:child_process';
+import { once } from 'node:events';
+import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as https from 'node:https';
+import * as net from 'node:net';
+import * as path from 'node:path';
+import * as readline from 'node:readline';
+import { setTimeout } from 'node:timers/promises';
+import { promisify } from 'node:util';
+
+import { collectStreamBody, getResponse } from './lib/net-helpers';
+import { ifdescribe, ifit, listen, waitUntil } from './lib/spec-helpers';
+import { closeWindow, closeAllWindows } from './lib/window-helpers';
+
 const fixturesPath = path.resolve(__dirname, 'fixtures');
+
+const isMacOSx64 = process.platform === 'darwin' && process.arch === 'x64';
 
 describe('electron module', () => {
   it('does not expose internal modules to require', () => {
@@ -80,7 +87,7 @@ describe('app module', () => {
   });
 
   describe('app name APIs', () => {
-    it('with properties', () => {
+    describe('with properties', () => {
       it('returns the name field of package.json', () => {
         expect(app.name).to.equal('Electron Test Main');
       });
@@ -94,7 +101,7 @@ describe('app module', () => {
       });
     });
 
-    it('with functions', () => {
+    describe('with functions', () => {
       it('returns the name field of package.json', () => {
         expect(app.getName()).to.equal('Electron Test Main');
       });
@@ -139,6 +146,20 @@ describe('app module', () => {
       const localeCountryCode = app.getLocaleCountryCode();
       expect(localeCountryCode).to.be.a('string');
       expect(localeCountryCode.length).to.be.oneOf([0, 2]);
+    });
+  });
+
+  describe('app.isHardwareAccelerationEnabled()', () => {
+    it('should be a boolean', () => {
+      expect(app.isHardwareAccelerationEnabled()).to.be.a('boolean');
+    });
+  });
+
+  ifdescribe(process.platform === 'win32')('app.setToastActivatorCLSID()', () => {
+    it('throws on invalid format', () => {
+      expect(() => {
+        app.setToastActivatorCLSID('1234567890');
+      }).to.throw(/Invalid CLSID format/);
     });
   });
 
@@ -247,11 +268,11 @@ describe('app module', () => {
       const firstExited = once(first, 'exit');
 
       // Wait for the first app to boot.
-      const firstStdoutLines = first.stdout.pipe(split());
-      while ((await once(firstStdoutLines, 'data')).toString() !== 'started') {
+      const firstStdoutLines = readline.createInterface({ input: first.stdout });
+      while ((await once(firstStdoutLines, 'line')).toString() !== 'started') {
         // wait.
       }
-      const additionalDataPromise = once(firstStdoutLines, 'data');
+      const additionalDataPromise = once(firstStdoutLines, 'line');
 
       const secondInstanceArgs = [process.execPath, appPath, ...testArgs.args, '--some-switch', 'some-arg'];
       const second = cp.spawn(secondInstanceArgs[0], secondInstanceArgs.slice(1));
@@ -349,6 +370,44 @@ describe('app module', () => {
       } catch {
         // This is expected.
       }
+    });
+  });
+
+  // GitHub Actions macOS-13 runners used for x64 seem to have a problem with this test.
+  ifdescribe(process.platform !== 'linux' && !isMacOSx64)('app.{add|get|clear}RecentDocument(s)', () => {
+    const tempFiles = [
+      path.join(fixturesPath, 'foo.txt'),
+      path.join(fixturesPath, 'bar.txt'),
+      path.join(fixturesPath, 'baz.txt')
+    ];
+
+    afterEach(() => {
+      app.clearRecentDocuments();
+      for (const file of tempFiles) {
+        fs.unlinkSync(file);
+      }
+    });
+
+    beforeEach(() => {
+      for (const file of tempFiles) {
+        fs.writeFileSync(file, 'Lorem Ipsum');
+      }
+    });
+
+    it('can add a recent document', async () => {
+      app.addRecentDocument(tempFiles[0]);
+      await setTimeout(2000);
+      expect(app.getRecentDocuments()).to.include.members([tempFiles[0]]);
+    });
+
+    it('can clear recent documents', async () => {
+      app.addRecentDocument(tempFiles[1]);
+      app.addRecentDocument(tempFiles[2]);
+      await setTimeout(2000);
+      expect(app.getRecentDocuments()).to.include.members([tempFiles[1], tempFiles[2]]);
+      app.clearRecentDocuments();
+      await setTimeout(2000);
+      expect(app.getRecentDocuments()).to.deep.equal([]);
     });
   });
 
@@ -549,8 +608,8 @@ describe('app module', () => {
 
   describe('app.badgeCount', () => {
     const platformIsNotSupported =
-        (process.platform === 'win32') ||
-        (process.platform === 'linux' && !app.isUnityRunning());
+      (process.platform === 'win32') ||
+      (process.platform === 'linux' && !app.isUnityRunning());
 
     const expectedBadgeCount = 42;
 
@@ -594,7 +653,7 @@ describe('app module', () => {
     });
   });
 
-  ifdescribe(process.platform !== 'linux' && !process.mas)('app.get/setLoginItemSettings API', function () {
+  ifdescribe(process.platform !== 'linux' && !process.mas && (process.platform !== 'darwin' || process.arch === 'arm64'))('app.get/setLoginItemSettings API', function () {
     const isMac = process.platform === 'darwin';
     const isWin = process.platform === 'win32';
 
@@ -974,23 +1033,116 @@ describe('app module', () => {
     });
   });
 
-  ifdescribe(process.platform !== 'linux')('accessibilitySupportEnabled property', () => {
-    it('with properties', () => {
-      it('can set accessibility support enabled', () => {
-        expect(app.accessibilitySupportEnabled).to.eql(false);
-
-        app.accessibilitySupportEnabled = true;
-        expect(app.accessibilitySupportEnabled).to.eql(true);
-      });
+  ifdescribe(process.platform !== 'linux')('accessibility support functionality', () => {
+    it('is mutable', () => {
+      const values = [false, true, false];
+      const setters: Array<(arg: boolean) => void> = [
+        (value) => { app.accessibilitySupportEnabled = value; },
+        (value) => app.setAccessibilitySupportEnabled(value)
+      ];
+      const getters: Array<() => boolean> = [
+        () => app.accessibilitySupportEnabled,
+        () => app.isAccessibilitySupportEnabled()
+      ];
+      for (const value of values) {
+        for (const set of setters) {
+          set(value);
+          for (const get of getters) expect(get()).to.eql(value);
+        }
+      }
     });
 
-    it('with functions', () => {
-      it('can set accessibility support enabled', () => {
-        expect(app.isAccessibilitySupportEnabled()).to.eql(false);
+    it('getAccessibilitySupportFeatures returns an array with accessibility properties', () => {
+      const values = [
+        'nativeAPIs',
+        'webContents',
+        'inlineTextBoxes',
+        'extendedProperties',
+        'screenReader',
+        'html',
+        'labelImages',
+        'pdfPrinting'
+      ];
 
-        app.setAccessibilitySupportEnabled(true);
-        expect(app.isAccessibilitySupportEnabled()).to.eql(true);
-      });
+      app.setAccessibilitySupportEnabled(false);
+
+      const disabled = app.getAccessibilitySupportFeatures();
+      expect(disabled).to.be.an('array');
+      expect(disabled.includes('complete')).to.equal(false);
+
+      app.setAccessibilitySupportEnabled(true);
+      const enabled = app.getAccessibilitySupportFeatures();
+      expect(enabled).to.be.an('array').with.length.greaterThan(0);
+
+      const boolEnabled = app.isAccessibilitySupportEnabled();
+      if (boolEnabled) {
+        expect(enabled.some(f => values.includes(f))).to.equal(true);
+      }
+    });
+
+    it('setAccessibilitySupportFeatures can enable a subset of features', () => {
+      app.setAccessibilitySupportEnabled(false);
+      expect(app.isAccessibilitySupportEnabled()).to.equal(false);
+      expect(app.getAccessibilitySupportFeatures()).to.be.an('array').that.is.empty();
+
+      const subsetA = ['webContents', 'html'];
+      app.setAccessibilitySupportFeatures(subsetA);
+      const afterSubsetA = app.getAccessibilitySupportFeatures();
+      expect(afterSubsetA).to.deep.equal(subsetA);
+
+      const subsetB = [
+        'nativeAPIs',
+        'webContents',
+        'inlineTextBoxes',
+        'extendedProperties'
+      ];
+      app.setAccessibilitySupportFeatures(subsetB);
+      const afterSubsetB = app.getAccessibilitySupportFeatures();
+      expect(afterSubsetB).to.deep.equal(subsetB);
+    });
+
+    it('throws when an unknown accessibility feature is requested', () => {
+      expect(() => {
+        app.setAccessibilitySupportFeatures(['unknownFeature']);
+      }).to.throw('Unknown accessibility feature: unknownFeature');
+    });
+  });
+
+  ifdescribe(process.platform === 'win32')('setJumpList(categories)', () => {
+    it('throws an error when categories is not null or an array', () => {
+      expect(() => {
+        app.setJumpList('string' as any);
+      }).to.throw('Argument must be null or an array of categories');
+    });
+
+    it('can get jump list settings', () => {
+      const settings = app.getJumpListSettings();
+      expect(settings).to.eql({ minItems: 10, removedItems: [] });
+    });
+
+    it('can set a jump list with an array of categories', () => {
+      expect(() => {
+        app.setJumpList([
+          { type: 'frequent' },
+          {
+            items: [{
+              type: 'task',
+              title: 'New Project',
+              program: process.execPath,
+              args: '--new-project',
+              description: 'Create a new project.'
+            },
+            { type: 'separator' },
+            {
+              type: 'task',
+              title: 'Recover Project',
+              program: process.execPath,
+              args: '--recover-project',
+              description: 'Recover Project'
+            }]
+          }
+        ]);
+      }).to.not.throw();
     });
   });
 
@@ -1025,6 +1177,20 @@ describe('app module', () => {
       ];
       expect(paths).to.deep.equal([true, true, true]);
     });
+
+    if (process.platform === 'darwin') {
+      it('throws an error when trying to get the assets path on macOS', () => {
+        expect(() => {
+          app.getPath('assets' as any);
+        }).to.throw(/Failed to get 'assets' path/);
+      });
+    } else {
+      it('returns an assets path that is identical to the module path', () => {
+        const assetsPath = app.getPath('assets');
+        expect(fs.existsSync(assetsPath)).to.be.true();
+        expect(assetsPath).to.equal(path.dirname(app.getPath('module')));
+      });
+    }
 
     it('throws an error when the name is invalid', () => {
       expect(() => {
@@ -1079,7 +1245,7 @@ describe('app module', () => {
 
     describe('sessionData', () => {
       const appPath = path.join(__dirname, 'fixtures', 'apps', 'set-path');
-      const appName = fs.readJsonSync(path.join(appPath, 'package.json')).name;
+      const appName = JSON.parse(fs.readFileSync(path.join(appPath, 'package.json'), 'utf8')).name;
       const userDataPath = path.join(app.getPath('appData'), appName);
       const tempBrowserDataPath = path.join(app.getPath('temp'), appName);
 
@@ -1100,8 +1266,8 @@ describe('app module', () => {
       };
 
       beforeEach(() => {
-        fs.removeSync(userDataPath);
-        fs.removeSync(tempBrowserDataPath);
+        fs.rmSync(userDataPath, { force: true, recursive: true });
+        fs.rmSync(tempBrowserDataPath, { force: true, recursive: true });
       });
 
       it('writes to userData by default', () => {
@@ -1403,6 +1569,7 @@ describe('app module', () => {
 
         types.push(entry.type);
         expect(entry.cpu).to.have.ownProperty('percentCPUUsage').that.is.a('number');
+        expect(entry.cpu).to.have.ownProperty('cumulativeCPUUsage').that.is.a('number');
         expect(entry.cpu).to.have.ownProperty('idleWakeupsPerSecond').that.is.a('number');
 
         expect(entry.memory).to.have.property('workingSetSize').that.is.greaterThan(0);
@@ -1445,8 +1612,7 @@ describe('app module', () => {
     });
   });
 
-  // FIXME https://github.com/electron/electron/issues/24224
-  ifdescribe(process.platform !== 'linux')('getGPUInfo() API', () => {
+  ifdescribe(!process.env.IS_ASAN)('getGPUInfo() API', () => {
     const appPath = path.join(fixturesPath, 'api', 'gpu-info.js');
 
     const getGPUInfo = async (type: string) => {
@@ -1520,19 +1686,6 @@ describe('app module', () => {
   });
 
   ifdescribe(!(process.platform === 'linux' && (process.arch === 'arm64' || process.arch === 'arm')))('sandbox options', () => {
-    // Our ARM tests are run on VSTS rather than CircleCI, and the Docker
-    // setup on VSTS disallows syscalls that Chrome requires for setting up
-    // sandboxing.
-    // See:
-    // - https://docs.docker.com/engine/security/seccomp/#significant-syscalls-blocked-by-the-default-profile
-    // - https://chromium.googlesource.com/chromium/src/+/70.0.3538.124/sandbox/linux/services/credentials.cc#292
-    // - https://github.com/docker/docker-ce/blob/ba7dfc59ccfe97c79ee0d1379894b35417b40bca/components/engine/profiles/seccomp/seccomp_default.go#L497
-    // - https://blog.jessfraz.com/post/how-to-use-new-docker-seccomp-profiles/
-    //
-    // Adding `--cap-add SYS_ADMIN` or `--security-opt seccomp=unconfined`
-    // to the Docker invocation allows the syscalls that Chrome needs, but
-    // are probably more permissive than we'd like.
-
     let appProcess: cp.ChildProcess = null as any;
     let server: net.Server = null as any;
     const socketPath = process.platform === 'win32' ? '\\\\.\\pipe\\electron-mixed-sandbox' : '/tmp/electron-mixed-sandbox';
@@ -1639,19 +1792,19 @@ describe('app module', () => {
 
   ifdescribe(process.platform === 'darwin')('dock APIs', () => {
     after(async () => {
-      await app.dock.show();
+      await app.dock?.show();
     });
 
     describe('dock.setMenu', () => {
       it('can be retrieved via dock.getMenu', () => {
-        expect(app.dock.getMenu()).to.equal(null);
+        expect(app.dock?.getMenu()).to.equal(null);
         const menu = new Menu();
-        app.dock.setMenu(menu);
-        expect(app.dock.getMenu()).to.equal(menu);
+        app.dock?.setMenu(menu);
+        expect(app.dock?.getMenu()).to.equal(menu);
       });
 
       it('keeps references to the menu', () => {
-        app.dock.setMenu(new Menu());
+        app.dock?.setMenu(new Menu());
         const v8Util = process._linkedBinding('electron_common_v8_util');
         v8Util.requestGarbageCollectionForTesting();
       });
@@ -1661,56 +1814,56 @@ describe('app module', () => {
       it('throws a descriptive error for a bad icon path', () => {
         const badPath = path.resolve('I', 'Do', 'Not', 'Exist');
         expect(() => {
-          app.dock.setIcon(badPath);
+          app.dock?.setIcon(badPath);
         }).to.throw(/Failed to load image from path (.+)/);
       });
     });
 
     describe('dock.bounce', () => {
       it('should return -1 for unknown bounce type', () => {
-        expect(app.dock.bounce('bad type' as any)).to.equal(-1);
+        expect(app.dock?.bounce('bad type' as any)).to.equal(-1);
       });
 
       it('should return a positive number for informational type', () => {
         const appHasFocus = !!BrowserWindow.getFocusedWindow();
         if (!appHasFocus) {
-          expect(app.dock.bounce('informational')).to.be.at.least(0);
+          expect(app.dock?.bounce('informational')).to.be.at.least(0);
         }
       });
 
       it('should return a positive number for critical type', () => {
         const appHasFocus = !!BrowserWindow.getFocusedWindow();
         if (!appHasFocus) {
-          expect(app.dock.bounce('critical')).to.be.at.least(0);
+          expect(app.dock?.bounce('critical')).to.be.at.least(0);
         }
       });
     });
 
     describe('dock.cancelBounce', () => {
       it('should not throw', () => {
-        app.dock.cancelBounce(app.dock.bounce('critical'));
+        app.dock?.cancelBounce(app.dock?.bounce('critical'));
       });
     });
 
     describe('dock.setBadge', () => {
       after(() => {
-        app.dock.setBadge('');
+        app.dock?.setBadge('');
       });
 
       it('should not throw', () => {
-        app.dock.setBadge('1');
+        app.dock?.setBadge('1');
       });
 
       it('should be retrievable via getBadge', () => {
-        app.dock.setBadge('test');
-        expect(app.dock.getBadge()).to.equal('test');
+        app.dock?.setBadge('test');
+        expect(app.dock?.getBadge()).to.equal('test');
       });
     });
 
     describe('dock.hide', () => {
       it('should not throw', () => {
-        app.dock.hide();
-        expect(app.dock.isVisible()).to.equal(false);
+        app.dock?.hide();
+        expect(app.dock?.isVisible()).to.equal(false);
       });
     });
 
@@ -1719,17 +1872,17 @@ describe('app module', () => {
     // See https://github.com/electron/electron/pull/25269 for more.
     describe('dock.show', () => {
       it('should not throw', () => {
-        return app.dock.show().then(() => {
-          expect(app.dock.isVisible()).to.equal(true);
+        return app.dock?.show().then(() => {
+          expect(app.dock?.isVisible()).to.equal(true);
         });
       });
 
       it('returns a Promise', () => {
-        expect(app.dock.show()).to.be.a('promise');
+        expect(app.dock?.show()).to.be.a('promise');
       });
 
       it('eventually fulfills', async () => {
-        await expect(app.dock.show()).to.eventually.be.fulfilled.equal(undefined);
+        await expect(app.dock?.show()).to.eventually.be.fulfilled.equal(undefined);
       });
     });
   });
@@ -1895,6 +2048,154 @@ describe('app module', () => {
       app.showAboutPanel();
     });
   });
+
+  describe('app.setProxy(options)', () => {
+    let server: http.Server;
+
+    afterEach(async () => {
+      if (server) {
+        server.close();
+      }
+      await app.setProxy({ mode: 'direct' as const });
+    });
+
+    it('allows configuring proxy settings', async () => {
+      const config = { proxyRules: 'http=myproxy:80' };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('PROXY myproxy:80');
+    });
+
+    it('allows removing the implicit bypass rules for localhost', async () => {
+      const config = {
+        proxyRules: 'http=myproxy:80',
+        proxyBypassRules: '<-loopback>'
+      };
+
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://localhost');
+      expect(proxy).to.equal('PROXY myproxy:80');
+    });
+
+    it('allows configuring proxy settings with pacScript', async () => {
+      server = http.createServer((req, res) => {
+        const pac = `
+          function FindProxyForURL(url, host) {
+            return "PROXY myproxy:8132";
+          }
+        `;
+        res.writeHead(200, {
+          'Content-Type': 'application/x-ns-proxy-autoconfig'
+        });
+        res.end(pac);
+      });
+      const { url } = await listen(server);
+      {
+        const config = { pacScript: url };
+        await app.setProxy(config);
+        const proxy = await app.resolveProxy('https://google.com');
+        expect(proxy).to.equal('PROXY myproxy:8132');
+      }
+      {
+        const config = { mode: 'pac_script' as any, pacScript: url };
+        await app.setProxy(config);
+        const proxy = await app.resolveProxy('https://google.com');
+        expect(proxy).to.equal('PROXY myproxy:8132');
+      }
+    });
+
+    it('allows bypassing proxy settings', async () => {
+      const config = {
+        proxyRules: 'http=myproxy:80',
+        proxyBypassRules: '<local>'
+      };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example/');
+      expect(proxy).to.equal('DIRECT');
+    });
+
+    it('allows configuring proxy settings with mode `direct`', async () => {
+      const config = { mode: 'direct' as const, proxyRules: 'http=myproxy:80' };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('DIRECT');
+    });
+
+    it('allows configuring proxy settings with mode `auto_detect`', async () => {
+      const config = { mode: 'auto_detect' as const };
+      await app.setProxy(config);
+    });
+
+    it('allows configuring proxy settings with mode `pac_script`', async () => {
+      const config = { mode: 'pac_script' as const };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('DIRECT');
+    });
+
+    it('allows configuring proxy settings with mode `fixed_servers`', async () => {
+      const config = { mode: 'fixed_servers' as const, proxyRules: 'http=myproxy:80' };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('PROXY myproxy:80');
+    });
+
+    it('allows configuring proxy settings with mode `system`', async () => {
+      const config = { mode: 'system' as const };
+      await app.setProxy(config);
+    });
+
+    it('disallows configuring proxy settings with mode `invalid`', async () => {
+      const config = { mode: 'invalid' as any };
+      await expect(app.setProxy(config)).to.eventually.be.rejectedWith(/Invalid mode/);
+    });
+
+    it('impacts proxy for requests made from utility process', async () => {
+      const utilityFixturePath = path.resolve(__dirname, 'fixtures', 'api', 'utility-process', 'api-net-spec.js');
+      const fn = async () => {
+        const urlRequest = electronNet.request('http://example.com/');
+        const response = await getResponse(urlRequest);
+        expect(response.statusCode).to.equal(200);
+        const message = await collectStreamBody(response);
+        expect(message).to.equal('ok from proxy\n');
+      };
+      server = http.createServer((req, res) => {
+        res.writeHead(200);
+        res.end('ok from proxy\n');
+      });
+      const { port, hostname } = await listen(server);
+      const config = { mode: 'fixed_servers' as const, proxyRules: `http=${hostname}:${port}` };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal(`PROXY ${hostname}:${port}`);
+      const child = utilityProcess.fork(utilityFixturePath, [], {
+        execArgv: ['--expose-gc']
+      });
+      child.postMessage({ fn: `(${fn})()` });
+      const [data] = await once(child, 'message');
+      expect(data.ok).to.be.true(data.message);
+      // Cleanup.
+      const [code] = await once(child, 'exit');
+      expect(code).to.equal(0);
+    });
+
+    it('does not impact proxy for requests made from main process', async () => {
+      server = http.createServer((req, res) => {
+        res.writeHead(200);
+        res.end('ok from server\n');
+      });
+      const { url } = await listen(server);
+      const config = { mode: 'fixed_servers' as const, proxyRules: 'http=myproxy:80' };
+      await app.setProxy(config);
+      const proxy = await app.resolveProxy('http://example.com/');
+      expect(proxy).to.equal('PROXY myproxy:80');
+      const urlRequest = electronNet.request(url);
+      const response = await getResponse(urlRequest);
+      expect(response.statusCode).to.equal(200);
+      const message = await collectStreamBody(response);
+      expect(message).to.equal('ok from server\n');
+    });
+  });
 });
 
 describe('default behavior', () => {
@@ -1980,6 +2281,10 @@ describe('default behavior', () => {
       });
 
       serverUrl = (await listen(server)).url;
+    });
+
+    after(() => {
+      server.close();
     });
 
     it('should emit a login event on app when a WebContents hits a 401', async () => {

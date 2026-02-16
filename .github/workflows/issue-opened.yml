@@ -11,17 +11,150 @@ jobs:
   add-to-issue-triage:
     if: ${{ contains(github.event.issue.labels.*.name, 'bug :beetle:') }}
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Generate GitHub App token
-        uses: electron/github-app-auth-action@384fd19694fe7b6dcc9a684746c6976ad78228ae # v1.1.1
+        uses: electron/github-app-auth-action@e14e47722ed120360649d0789e25b9baece12725 # v2.0.0
         id: generate-token
         with:
           creds: ${{ secrets.ISSUE_TRIAGE_GH_APP_CREDS }}
           org: electron
       - name: Add to Issue Triage
-        uses: dsanders11/project-actions/add-item@a24415515fa60a22f71f9d9d00e36ca82660cde9 # v1.0.1
+        uses: dsanders11/project-actions/add-item@2134fe7cc71c58b7ae259c82a8e63c6058255678 # v1.7.0
         with:
           field: Reporter
           field-value: ${{ github.event.issue.user.login }}
           project-number: 90
           token: ${{ steps.generate-token.outputs.token }}
+  set-labels:
+    if: ${{ contains(github.event.issue.labels.*.name, 'bug :beetle:') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Generate GitHub App token
+        uses: electron/github-app-auth-action@e14e47722ed120360649d0789e25b9baece12725 # v2.0.0
+        id: generate-token
+        with:
+          creds: ${{ secrets.ISSUE_TRIAGE_GH_APP_CREDS }}
+          org: electron
+      - name: Sparse checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: |
+            .
+            .github
+            .yarn
+      - run: yarn workspaces focus @electron/gha-workflows
+      - name: Add labels
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        id: add-labels
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        with:
+          github-token: ${{ steps.generate-token.outputs.token }}
+          script: |
+            const { chdir } = require('node:process');
+            chdir('${{ github.workspace }}/.github/workflows');
+
+            const { ElectronVersions } = require('@electron/fiddle-core');
+            const { fromMarkdown } = require('mdast-util-from-markdown');
+            const { select } = require('unist-util-select');
+            const semver = require('semver');
+
+            const [ owner, repo ] = '${{ github.repository }}'.split('/');
+            const issue_number = ${{ github.event.issue.number }};
+
+            const tree = fromMarkdown(process.env.ISSUE_BODY);
+
+            const labels = [];
+
+            const electronVersion = select('heading:has(> text[value="Electron Version"]) + paragraph > text', tree)?.value.trim();
+            if (electronVersion !== undefined) {
+              // It's possible for multiple versions to be listed -
+              // for now check for comma or space separated version.
+              const versions = electronVersion.split(/, | /);
+              let hasSupportedVersion = false;
+
+              for (const version of versions) {
+                const major = semver.coerce(version, { loose: true })?.major;
+                if (major) {
+                  const versionLabel = `${major}-x-y`;
+                  let labelExists = false;
+
+                  try {
+                    await github.rest.issues.getLabel({
+                      owner,
+                      repo,
+                      name: versionLabel,
+                    });
+                    labelExists = true;
+                  } catch {}
+
+                  const electronVersions = await ElectronVersions.create(undefined, { ignoreCache: true });
+                  const validVersions = [...electronVersions.supportedMajors, ...electronVersions.prereleaseMajors];
+
+                  if (validVersions.includes(major)) {
+                    hasSupportedVersion = true;
+                    if (labelExists) {
+                      labels.push(versionLabel);
+                    }
+                  }
+                }
+              }
+
+              if (!hasSupportedVersion) {
+                core.setOutput('unsupportedMajor', true);
+                labels.push('blocked/need-info ❌');
+              }
+            }
+
+            const operatingSystems = select('heading:has(> text[value="What operating system(s) are you using?"]) + paragraph > text', tree)?.value.trim().split(', ');
+            const platformLabels = new Set();
+            for (const operatingSystem of (operatingSystems ?? [])) {
+              switch (operatingSystem) {
+                case 'Windows':
+                  platformLabels.add('platform/windows');
+                  break;
+                case 'macOS':
+                  platformLabels.add('platform/macOS');
+                  break;
+                case 'Ubuntu':
+                case 'Other Linux':
+                  platformLabels.add('platform/linux');
+                  break;
+              }
+            }
+
+            if (platformLabels.size === 3) {
+              labels.push('platform/all');
+            } else {
+              labels.push(...platformLabels);
+            }
+
+            const gistUrl = select('heading:has(> text[value="Testcase Gist URL"]) + paragraph > text', tree)?.value.trim();
+            if (gistUrl !== undefined && gistUrl.startsWith('https://gist.github.com/')) {
+              labels.push('has-repro-gist');
+            }
+
+            if (labels.length) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number,
+                labels,
+              });
+            }
+      - name: Create unsupported major comment
+        if: ${{ steps.add-labels.outputs.unsupportedMajor }}
+        uses: actions-cool/issues-helper@e2ff99831a4f13625d35064e2b3dfe65c07a0396 # v3.7.5
+        with:
+          actions: 'create-comment'
+          token: ${{ steps.generate-token.outputs.token }}
+          body: |
+            <!-- end-of-life -->
+
+            Hello @${{ github.event.issue.user.login }}. Thanks for reporting this and helping to make Electron better!
+            
+            The version of Electron reported in this issue has reached end-of-life and is [no longer supported](https://www.electronjs.org/docs/latest/tutorial/electron-timelines#timeline). If you're still experiencing this issue on a [supported version](https://www.electronjs.org/releases/stable) of Electron, please update this issue to reflect that version of Electron.
+
+            Now adding the https://github.com/electron/electron/labels/blocked%2Fneed-info%20%E2%9D%8C label for this reason. This issue will be closed in 10 days if the above is not addressed.

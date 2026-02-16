@@ -5,12 +5,12 @@
 #include "shell/common/gin_converters/net_converter.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
-#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "gin/converter.h"
@@ -25,12 +25,18 @@
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/public/mojom/chunked_data_pipe_getter.mojom.h"
+#include "services/network/public/mojom/fetch_api.mojom.h"
+#include "services/network/public/mojom/url_request.mojom.h"
 #include "shell/browser/api/electron_api_data_pipe_holder.h"
 #include "shell/common/gin_converters/gurl_converter.h"
 #include "shell/common/gin_converters/std_converter.h"
 #include "shell/common/gin_converters/value_converter.h"
+#include "shell/common/gin_helper/handle.h"
 #include "shell/common/gin_helper/promise.h"
+#include "shell/common/gin_helper/wrappable.h"
 #include "shell/common/node_includes.h"
+#include "shell/common/node_util.h"
+#include "shell/common/v8_util.h"
 
 namespace gin {
 
@@ -39,7 +45,7 @@ namespace {
 bool CertFromData(const std::string& data,
                   scoped_refptr<net::X509Certificate>* out) {
   auto cert_list = net::X509Certificate::CreateCertificateListFromBytes(
-      base::as_bytes(base::make_span(data)),
+      base::as_byte_span(data),
       net::X509Certificate::FORMAT_SINGLE_CERTIFICATE);
   if (cert_list.empty())
     return false;
@@ -158,16 +164,16 @@ v8::Local<v8::Value> Converter<net::CertPrincipal>::ToV8(
 v8::Local<v8::Value> Converter<net::HttpResponseHeaders*>::ToV8(
     v8::Isolate* isolate,
     net::HttpResponseHeaders* headers) {
-  base::Value::Dict response_headers;
+  base::DictValue response_headers;
   if (headers) {
     size_t iter = 0;
     std::string key;
     std::string value;
     while (headers->EnumerateHeaderLines(&iter, &key, &value)) {
       key = base::ToLowerASCII(key);
-      base::Value::List* values = response_headers.FindList(key);
+      base::ListValue* values = response_headers.FindList(key);
       if (!values)
-        values = &response_headers.Set(key, base::Value::List())->GetList();
+        values = &response_headers.Set(key, base::ListValue())->GetList();
       values->Append(value);
     }
   }
@@ -239,38 +245,41 @@ v8::Local<v8::Value> Converter<net::HttpRequestHeaders>::ToV8(
 bool Converter<net::HttpRequestHeaders>::FromV8(v8::Isolate* isolate,
                                                 v8::Local<v8::Value> val,
                                                 net::HttpRequestHeaders* out) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   if (!ConvertFromV8(isolate, val, &dict))
     return false;
   for (const auto it : dict) {
-    if (it.second.is_string()) {
-      std::string value = it.second.GetString();
-      out->SetHeader(it.first, value);
-    }
+    if (it.second.is_string())
+      out->SetHeader(it.first, std::move(it.second).TakeString());
   }
   return true;
 }
 
-class ChunkedDataPipeReadableStream
-    : public gin::Wrappable<ChunkedDataPipeReadableStream> {
+namespace {
+
+class ChunkedDataPipeReadableStream final
+    : public gin_helper::DeprecatedWrappable<ChunkedDataPipeReadableStream> {
  public:
-  static gin::Handle<ChunkedDataPipeReadableStream> Create(
+  static gin_helper::Handle<ChunkedDataPipeReadableStream> Create(
       v8::Isolate* isolate,
       network::ResourceRequestBody* request,
       network::DataElementChunkedDataPipe* data_element) {
-    return gin::CreateHandle(isolate, new ChunkedDataPipeReadableStream(
-                                          isolate, request, data_element));
+    return gin_helper::CreateHandle(
+        isolate,
+        new ChunkedDataPipeReadableStream(isolate, request, data_element));
   }
 
-  // gin::Wrappable
+  // gin_helper::Wrappable
   gin::ObjectTemplateBuilder GetObjectTemplateBuilder(
       v8::Isolate* isolate) override {
-    return gin::Wrappable<
+    return gin_helper::DeprecatedWrappable<
                ChunkedDataPipeReadableStream>::GetObjectTemplateBuilder(isolate)
         .SetMethod("read", &ChunkedDataPipeReadableStream::Read);
   }
 
-  static gin::WrapperInfo kWrapperInfo;
+  const char* GetTypeName() override { return "ChunkedDataPipeReadableStream"; }
+
+  static gin::DeprecatedWrapperInfo kWrapperInfo;
 
  private:
   ChunkedDataPipeReadableStream(
@@ -358,13 +367,12 @@ class ChunkedDataPipeReadableStream
                               base::Unretained(this)));
     }
 
-    uint32_t num_bytes = buf->ByteLength();
+    size_t num_bytes = buf->ByteLength();
     if (size_ && num_bytes > *size_ - bytes_read_)
       num_bytes = *size_ - bytes_read_;
     MojoResult rv = data_pipe_->ReadData(
-        static_cast<void*>(static_cast<char*>(buf->Buffer()->Data()) +
-                           buf->ByteOffset()),
-        &num_bytes, MOJO_READ_DATA_FLAG_NONE);
+        MOJO_READ_DATA_FLAG_NONE,
+        electron::util::as_byte_span(buf).first(num_bytes), num_bytes);
     if (rv == MOJO_RESULT_OK) {
       bytes_read_ += num_bytes;
       // Not needed for correctness, but this allows the consumer to send the
@@ -482,14 +490,17 @@ class ChunkedDataPipeReadableStream
   mojo::Remote<network::mojom::ChunkedDataPipeGetter> chunked_data_pipe_getter_;
   mojo::ScopedDataPipeConsumerHandle data_pipe_;
   mojo::SimpleWatcher handle_watcher_;
-  absl::optional<uint64_t> size_;
+  std::optional<uint64_t> size_;
   uint64_t bytes_read_ = 0;
   bool is_eof_ = false;
   v8::Global<v8::ArrayBufferView> buf_;
   gin_helper::Promise<int> promise_;
 };
-gin::WrapperInfo ChunkedDataPipeReadableStream::kWrapperInfo = {
+
+gin::DeprecatedWrapperInfo ChunkedDataPipeReadableStream::kWrapperInfo = {
     gin::kEmbedderNativeGin};
+
+}  // namespace
 
 // static
 v8::Local<v8::Value> Converter<network::ResourceRequestBody>::ToV8(
@@ -516,11 +527,11 @@ v8::Local<v8::Value> Converter<network::ResourceRequestBody>::ToV8(
       }
       case network::mojom::DataElement::Tag::kBytes: {
         upload_data.Set("type", "rawData");
-        const auto& bytes = element.As<network::DataElementBytes>().bytes();
-        const char* data = reinterpret_cast<const char*>(bytes.data());
         upload_data.Set(
             "bytes",
-            node::Buffer::Copy(isolate, data, bytes.size()).ToLocalChecked());
+            electron::Buffer::Copy(
+                isolate, element.As<network::DataElementBytes>().bytes())
+                .ToLocalChecked());
         break;
       }
       case network::mojom::DataElement::Tag::kDataPipe: {
@@ -528,7 +539,7 @@ v8::Local<v8::Value> Converter<network::ResourceRequestBody>::ToV8(
         // TODO(zcbenz): After the NetworkService refactor, the old blobUUID API
         // becomes unnecessarily complex, we should deprecate the getBlobData
         // API and return the DataPipeHolder wrapper directly.
-        auto holder = electron::api::DataPipeHolder::Create(isolate, element);
+        auto* holder = electron::api::DataPipeHolder::Create(isolate, element);
         upload_data.Set("blobUUID", holder->id());
         // The lifetime of data pipe is bound to the uploadData object.
         upload_data.Set("dataPipe", holder);
@@ -577,19 +588,17 @@ bool Converter<scoped_refptr<network::ResourceRequestBody>>::FromV8(
   base::Value list_value;
   if (!ConvertFromV8(isolate, val, &list_value) || !list_value.is_list())
     return false;
-  base::Value::List& list = list_value.GetList();
+  base::ListValue& list = list_value.GetList();
   *out = base::MakeRefCounted<network::ResourceRequestBody>();
   for (base::Value& dict_value : list) {
     if (!dict_value.is_dict())
       return false;
-    base::Value::Dict& dict = dict_value.GetDict();
+    base::DictValue& dict = dict_value.GetDict();
     std::string* type = dict.FindString("type");
     if (!type)
       return false;
     if (*type == "rawData") {
-      const base::Value::BlobStorage* bytes = dict.FindBlob("bytes");
-      (*out)->AppendBytes(reinterpret_cast<const char*>(bytes->data()),
-                          base::checked_cast<int>(bytes->size()));
+      (*out)->AppendBytes(std::move(*dict.Find("bytes")).TakeBlob());
     } else if (*type == "file") {
       const std::string* file = dict.FindString("filePath");
       if (!file)
@@ -691,7 +700,7 @@ bool Converter<net::DnsQueryType>::FromV8(v8::Isolate* isolate,
                                           v8::Local<v8::Value> val,
                                           net::DnsQueryType* out) {
   static constexpr auto Lookup =
-      base::MakeFixedFlatMap<base::StringPiece, net::DnsQueryType>({
+      base::MakeFixedFlatMap<std::string_view, net::DnsQueryType>({
           {"A", net::DnsQueryType::A},
           {"AAAA", net::DnsQueryType::AAAA},
       });
@@ -703,14 +712,13 @@ bool Converter<net::HostResolverSource>::FromV8(v8::Isolate* isolate,
                                                 v8::Local<v8::Value> val,
                                                 net::HostResolverSource* out) {
   using Val = net::HostResolverSource;
-  static constexpr auto Lookup =
-      base::MakeFixedFlatMap<base::StringPiece, Val>({
-          {"any", Val::ANY},
-          {"dns", Val::DNS},
-          {"localOnly", Val::LOCAL_ONLY},
-          {"mdns", Val::MULTICAST_DNS},
-          {"system", Val::SYSTEM},
-      });
+  static constexpr auto Lookup = base::MakeFixedFlatMap<std::string_view, Val>({
+      {"any", Val::ANY},
+      {"dns", Val::DNS},
+      {"localOnly", Val::LOCAL_ONLY},
+      {"mdns", Val::MULTICAST_DNS},
+      {"system", Val::SYSTEM},
+  });
   return FromV8WithLookup(isolate, val, Lookup, out);
 }
 
@@ -720,12 +728,11 @@ bool Converter<network::mojom::ResolveHostParameters::CacheUsage>::FromV8(
     v8::Local<v8::Value> val,
     network::mojom::ResolveHostParameters::CacheUsage* out) {
   using Val = network::mojom::ResolveHostParameters::CacheUsage;
-  static constexpr auto Lookup =
-      base::MakeFixedFlatMap<base::StringPiece, Val>({
-          {"allowed", Val::ALLOWED},
-          {"disallowed", Val::DISALLOWED},
-          {"staleAllowed", Val::STALE_ALLOWED},
-      });
+  static constexpr auto Lookup = base::MakeFixedFlatMap<std::string_view, Val>({
+      {"allowed", Val::ALLOWED},
+      {"disallowed", Val::DISALLOWED},
+      {"staleAllowed", Val::STALE_ALLOWED},
+  });
   return FromV8WithLookup(isolate, val, Lookup, out);
 }
 
@@ -735,11 +742,10 @@ bool Converter<network::mojom::SecureDnsPolicy>::FromV8(
     v8::Local<v8::Value> val,
     network::mojom::SecureDnsPolicy* out) {
   using Val = network::mojom::SecureDnsPolicy;
-  static constexpr auto Lookup =
-      base::MakeFixedFlatMap<base::StringPiece, Val>({
-          {"allow", Val::ALLOW},
-          {"disable", Val::DISABLE},
-      });
+  static constexpr auto Lookup = base::MakeFixedFlatMap<std::string_view, Val>({
+      {"allow", Val::ALLOW},
+      {"disable", Val::DISABLE},
+  });
   return FromV8WithLookup(isolate, val, Lookup, out);
 }
 

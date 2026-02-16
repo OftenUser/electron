@@ -4,8 +4,12 @@
 
 #include "shell/browser/api/electron_api_cookies.h"
 
+#include <sstream>
+#include <string>
+#include <string_view>
 #include <utility>
 
+#include "base/containers/fixed_flat_map.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "content/public/browser/browser_context.h"
@@ -15,6 +19,7 @@
 #include "gin/dictionary.h"
 #include "gin/object_template_builder.h"
 #include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_change_dispatcher.h"
 #include "net/cookies/cookie_inclusion_status.h"
 #include "net/cookies/cookie_store.h"
 #include "net/cookies/cookie_util.h"
@@ -24,7 +29,9 @@
 #include "shell/common/gin_converters/gurl_converter.h"
 #include "shell/common/gin_converters/value_converter.h"
 #include "shell/common/gin_helper/dictionary.h"
+#include "shell/common/gin_helper/handle.h"
 #include "shell/common/gin_helper/object_template_builder.h"
+#include "shell/common/gin_helper/promise.h"
 
 namespace gin {
 
@@ -57,7 +64,7 @@ struct Converter<net::CanonicalCookie> {
     dict.Set("domain", val.Domain());
     dict.Set("hostOnly", net::cookie_util::DomainIsHostOnly(val.Domain()));
     dict.Set("path", val.Path());
-    dict.Set("secure", val.IsSecure());
+    dict.Set("secure", val.SecureAttribute());
     dict.Set("httpOnly", val.IsHttpOnly());
     dict.Set("session", !val.IsPersistent());
     if (val.IsPersistent())
@@ -73,6 +80,11 @@ struct Converter<net::CookieChangeCause> {
                                    const net::CookieChangeCause& val) {
     switch (val) {
       case net::CookieChangeCause::INSERTED:
+        return gin::StringToV8(isolate, "inserted");
+      case net::CookieChangeCause::INSERTED_NO_CHANGE_OVERWRITE:
+        return gin::StringToV8(isolate, "inserted-no-change-overwrite");
+      case net::CookieChangeCause::INSERTED_NO_VALUE_CHANGE_OVERWRITE:
+        return gin::StringToV8(isolate, "inserted-no-value-change-overwrite");
       case net::CookieChangeCause::EXPLICIT:
         return gin::StringToV8(isolate, "explicit");
       case net::CookieChangeCause::OVERWRITE:
@@ -95,52 +107,30 @@ namespace electron::api {
 
 namespace {
 
-// Returns whether |domain| matches |filter|.
-bool MatchesDomain(std::string filter, const std::string& domain) {
-  // Add a leading '.' character to the filter domain if it doesn't exist.
-  if (net::cookie_util::DomainIsHostOnly(filter))
-    filter.insert(0, ".");
-
-  std::string sub_domain(domain);
-  // Strip any leading '.' character from the input cookie domain.
-  if (!net::cookie_util::DomainIsHostOnly(sub_domain))
-    sub_domain = sub_domain.substr(1);
-
-  // Now check whether the domain argument is a subdomain of the filter domain.
-  for (sub_domain.insert(0, "."); sub_domain.length() >= filter.length();) {
-    if (sub_domain == filter)
-      return true;
-    const size_t next_dot = sub_domain.find('.', 1);  // Skip over leading dot.
-    sub_domain.erase(0, next_dot);
-  }
-  return false;
-}
-
 // Returns whether |cookie| matches |filter|.
-bool MatchesCookie(const base::Value::Dict& filter,
+bool MatchesCookie(const base::DictValue& filter,
                    const net::CanonicalCookie& cookie) {
   const std::string* str;
   if ((str = filter.FindString("name")) && *str != cookie.Name())
     return false;
   if ((str = filter.FindString("path")) && *str != cookie.Path())
     return false;
-  if ((str = filter.FindString("domain")) &&
-      !MatchesDomain(*str, cookie.Domain()))
+  if ((str = filter.FindString("domain")) && !cookie.IsDomainMatch(*str))
     return false;
-  absl::optional<bool> secure_filter = filter.FindBool("secure");
-  if (secure_filter && *secure_filter != cookie.IsSecure())
+  std::optional<bool> secure_filter = filter.FindBool("secure");
+  if (secure_filter && *secure_filter != cookie.SecureAttribute())
     return false;
-  absl::optional<bool> session_filter = filter.FindBool("session");
+  std::optional<bool> session_filter = filter.FindBool("session");
   if (session_filter && *session_filter == cookie.IsPersistent())
     return false;
-  absl::optional<bool> httpOnly_filter = filter.FindBool("httpOnly");
+  std::optional<bool> httpOnly_filter = filter.FindBool("httpOnly");
   if (httpOnly_filter && *httpOnly_filter != cookie.IsHttpOnly())
     return false;
   return true;
 }
 
 // Remove cookies from |list| not matching |filter|, and pass it to |callback|.
-void FilterCookies(base::Value::Dict filter,
+void FilterCookies(base::DictValue filter,
                    gin_helper::Promise<net::CookieList> promise,
                    const net::CookieList& cookies) {
   net::CookieList result;
@@ -152,7 +142,7 @@ void FilterCookies(base::Value::Dict filter,
 }
 
 void FilterCookieWithStatuses(
-    base::Value::Dict filter,
+    base::DictValue filter,
     gin_helper::Promise<net::CookieList> promise,
     const net::CookieAccessResultList& list,
     const net::CookieAccessResultList& excluded_list) {
@@ -161,33 +151,110 @@ void FilterCookieWithStatuses(
 }
 
 // Parse dictionary property to CanonicalCookie time correctly.
-base::Time ParseTimeProperty(const absl::optional<double>& value) {
+base::Time ParseTimeProperty(const std::optional<double>& value) {
   if (!value)  // empty time means ignoring the parameter
-    return base::Time();
+    return {};
   if (*value == 0)  // FromSecondsSinceUnixEpoch would convert 0 to empty Time
     return base::Time::UnixEpoch();
   return base::Time::FromSecondsSinceUnixEpoch(*value);
 }
 
-base::StringPiece InclusionStatusToString(net::CookieInclusionStatus status) {
-  if (status.HasExclusionReason(net::CookieInclusionStatus::EXCLUDE_HTTP_ONLY))
-    return "Failed to create httponly cookie";
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::EXCLUDE_SECURE_ONLY))
-    return "Cannot create a secure cookie from an insecure URL";
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::EXCLUDE_FAILURE_TO_STORE))
-    return "Failed to parse cookie";
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::EXCLUDE_INVALID_DOMAIN))
-    return "Failed to set cookie with an invalid domain attribute";
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::EXCLUDE_INVALID_PREFIX))
-    return "Failed because the cookie violated prefix rules.";
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::EXCLUDE_NONCOOKIEABLE_SCHEME))
-    return "Cannot set cookie for current scheme";
-  return "Setting cookie failed";
+const std::string InclusionStatusToString(net::CookieInclusionStatus status) {
+  // See net/cookies/cookie_inclusion_status.h for cookie error descriptions.
+  using Reason = net::CookieInclusionStatus::ExclusionReason;
+  static constexpr auto Reasons =
+      base::MakeFixedFlatMap<Reason, std::string_view>(
+          {{Reason::EXCLUDE_UNKNOWN_ERROR, "Unknown error"},
+           {Reason::EXCLUDE_HTTP_ONLY,
+            "The cookie was HttpOnly, but the attempted access was through a "
+            "non-HTTP API."},
+           {Reason::EXCLUDE_SECURE_ONLY,
+            "The cookie was Secure, but the URL was not allowed to access "
+            "Secure cookies."},
+           {Reason::EXCLUDE_DOMAIN_MISMATCH,
+            "The cookie's domain attribute did not match the domain of the URL "
+            "attempting access."},
+           {Reason::EXCLUDE_NOT_ON_PATH,
+            "The cookie's path attribute did not match the path of the URL "
+            "attempting access."},
+           {Reason::EXCLUDE_SAMESITE_STRICT,
+            "The cookie had SameSite=Strict, and the attempted access did not "
+            "have an appropriate SameSiteCookieContext"},
+           {Reason::EXCLUDE_SAMESITE_LAX,
+            "The cookie had SameSite=Lax, and the attempted access did not "
+            "have "
+            "an appropriate SameSiteCookieContext"},
+           {Reason::EXCLUDE_SAMESITE_UNSPECIFIED_TREATED_AS_LAX,
+            "The cookie did not specify a SameSite attribute, and therefore "
+            "was treated as if it were SameSite=Lax, and the attempted "
+            "access did not have an appropriate SameSiteCookieContext."},
+           {Reason::EXCLUDE_SAMESITE_NONE_INSECURE,
+            "The cookie specified SameSite=None, but it was not Secure."},
+           {Reason::EXCLUDE_USER_PREFERENCES,
+            "Caller did not allow access to the cookie."},
+           {Reason::EXCLUDE_FAILURE_TO_STORE,
+            "The cookie was malformed and could not be stored"},
+           {Reason::EXCLUDE_NONCOOKIEABLE_SCHEME,
+            "Attempted to set a cookie from a scheme that does not support "
+            "cookies."},
+           {Reason::EXCLUDE_OVERWRITE_SECURE,
+            "The cookie would have overwritten a Secure cookie, and was not "
+            "allowed to do so."},
+           {Reason::EXCLUDE_OVERWRITE_HTTP_ONLY,
+            "The cookie would have overwritten an HttpOnly cookie, and was not "
+            "allowed to do so."},
+           {Reason::EXCLUDE_INVALID_DOMAIN,
+            "The cookie was set with an invalid Domain attribute."},
+           {Reason::EXCLUDE_INVALID_PREFIX,
+            "The cookie was set with an invalid __Host- or __Secure- prefix."},
+           {Reason::EXCLUDE_INVALID_PARTITIONED,
+            "Cookie was set with an invalid Partitioned attribute, which is "
+            "only valid if the cookie has a __Host- prefix."},
+           {Reason::EXCLUDE_NAME_VALUE_PAIR_EXCEEDS_MAX_SIZE,
+            "The cookie exceeded the name/value pair size limit."},
+           {Reason::EXCLUDE_ATTRIBUTE_VALUE_EXCEEDS_MAX_SIZE,
+            "Cookie exceeded the attribute size limit."},
+           {Reason::EXCLUDE_DOMAIN_NON_ASCII,
+            "The cookie was set with a Domain attribute containing non ASCII "
+            "characters."},
+           {Reason::EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET,
+            "The cookie is blocked by third-party cookie blocking but the two "
+            "sites are in the same First-Party Set"},
+           {Reason::EXCLUDE_PORT_MISMATCH,
+            "The cookie's source_port did not match the port of the request."},
+           {Reason::EXCLUDE_SCHEME_MISMATCH,
+            "The cookie's source_scheme did not match the scheme of the "
+            "request."},
+           {Reason::EXCLUDE_SHADOWING_DOMAIN,
+            "The cookie is a domain cookie and has the same name as an origin "
+            "cookie on this origin."},
+           {Reason::EXCLUDE_DISALLOWED_CHARACTER,
+            "The cookie contains ASCII control characters"},
+           {Reason::EXCLUDE_THIRD_PARTY_PHASEOUT,
+            "The cookie is blocked for third-party cookie phaseout."},
+           {Reason::EXCLUDE_NO_COOKIE_CONTENT,
+            "The cookie contains no content or only whitespace."},
+           {Reason::EXCLUDE_ANONYMOUS_CONTEXT,
+            "The cookie is unpartitioned and being accessed from an anonymous "
+            "context."},
+           {Reason::EXCLUDE_INVALID_PATH,
+            "The cookie was set with an invalid Path attribute."}});
+  static_assert(
+      Reasons.size() ==
+          net::CookieInclusionStatus::ExclusionReasonBitset::kValueCount,
+      "Please ensure all ExclusionReason variants are enumerated in "
+      "GetDebugString");
+
+  std::ostringstream reason;
+  reason << "Failed to set cookie - ";
+  for (const auto& [val, str] : Reasons) {
+    if (status.HasExclusionReason(val)) {
+      reason << str;
+    }
+  }
+
+  reason << status.GetDebugString();
+  return reason.str();
 }
 
 std::string StringToCookieSameSite(const std::string* str_ptr,
@@ -212,12 +279,23 @@ std::string StringToCookieSameSite(const std::string* str_ptr,
   return "";
 }
 
+bool IsDeletion(net::CookieChangeCause cause) {
+  switch (cause) {
+    case net::CookieChangeCause::INSERTED:
+    case net::CookieChangeCause::INSERTED_NO_CHANGE_OVERWRITE:
+    case net::CookieChangeCause::INSERTED_NO_VALUE_CHANGE_OVERWRITE:
+      return false;
+    default:
+      return true;
+  }
+}
+
 }  // namespace
 
-gin::WrapperInfo Cookies::kWrapperInfo = {gin::kEmbedderNativeGin};
+gin::DeprecatedWrapperInfo Cookies::kWrapperInfo = {gin::kEmbedderNativeGin};
 
-Cookies::Cookies(v8::Isolate* isolate, ElectronBrowserContext* browser_context)
-    : browser_context_(browser_context) {
+Cookies::Cookies(ElectronBrowserContext* browser_context)
+    : browser_context_{browser_context} {
   cookie_change_subscription_ =
       browser_context_->cookie_change_notifier()->RegisterCookieChangeCallback(
           base::BindRepeating(&Cookies::OnCookieChanged,
@@ -234,7 +312,7 @@ v8::Local<v8::Promise> Cookies::Get(v8::Isolate* isolate,
   auto* storage_partition = browser_context_->GetDefaultStoragePartition();
   auto* manager = storage_partition->GetCookieManagerForBrowserProcess();
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   gin::ConvertFromV8(isolate, filter.GetHandle(), &dict);
 
   std::string url;
@@ -283,7 +361,7 @@ v8::Local<v8::Promise> Cookies::Remove(v8::Isolate* isolate,
 }
 
 v8::Local<v8::Promise> Cookies::Set(v8::Isolate* isolate,
-                                    base::Value::Dict details) {
+                                    base::DictValue details) {
   gin_helper::Promise<void> promise(isolate);
   v8::Local<v8::Promise> handle = promise.GetHandle();
 
@@ -309,9 +387,11 @@ v8::Local<v8::Promise> Cookies::Set(v8::Isolate* isolate,
 
   GURL url(url_string ? *url_string : "");
   if (!url.is_valid()) {
+    net::CookieInclusionStatus cookie_inclusion_status;
+    cookie_inclusion_status.AddExclusionReason(
+        net::CookieInclusionStatus::ExclusionReason::EXCLUDE_INVALID_DOMAIN);
     promise.RejectWithErrorMessage(
-        InclusionStatusToString(net::CookieInclusionStatus(
-            net::CookieInclusionStatus::EXCLUDE_INVALID_DOMAIN)));
+        InclusionStatusToString(cookie_inclusion_status));
     return handle;
   }
 
@@ -321,15 +401,15 @@ v8::Local<v8::Promise> Cookies::Set(v8::Isolate* isolate,
       path ? *path : "", ParseTimeProperty(details.FindDouble("creationDate")),
       ParseTimeProperty(details.FindDouble("expirationDate")),
       ParseTimeProperty(details.FindDouble("lastAccessDate")), secure,
-      http_only, same_site, net::COOKIE_PRIORITY_DEFAULT, absl::nullopt,
+      http_only, same_site, net::COOKIE_PRIORITY_DEFAULT, std::nullopt,
       &status);
 
   if (!canonical_cookie || !canonical_cookie->IsCanonical()) {
+    net::CookieInclusionStatus cookie_inclusion_status;
+    cookie_inclusion_status.AddExclusionReason(
+        net::CookieInclusionStatus::ExclusionReason::EXCLUDE_FAILURE_TO_STORE);
     promise.RejectWithErrorMessage(InclusionStatusToString(
-        !status.IsInclude()
-            ? status
-            : net::CookieInclusionStatus(
-                  net::CookieInclusionStatus::EXCLUDE_FAILURE_TO_STORE)));
+        !status.IsInclude() ? status : cookie_inclusion_status));
     return handle;
   }
 
@@ -373,16 +453,17 @@ v8::Local<v8::Promise> Cookies::FlushStore(v8::Isolate* isolate) {
 void Cookies::OnCookieChanged(const net::CookieChangeInfo& change) {
   v8::Isolate* isolate = JavascriptEnvironment::GetIsolate();
   v8::HandleScope scope(isolate);
+  bool is_deletion = IsDeletion(change.cause);
   Emit("changed", gin::ConvertToV8(isolate, change.cookie),
        gin::ConvertToV8(isolate, change.cause),
-       gin::ConvertToV8(isolate,
-                        change.cause != net::CookieChangeCause::INSERTED));
+       gin::ConvertToV8(isolate, is_deletion));
 }
 
 // static
-gin::Handle<Cookies> Cookies::Create(v8::Isolate* isolate,
-                                     ElectronBrowserContext* browser_context) {
-  return gin::CreateHandle(isolate, new Cookies(isolate, browser_context));
+gin_helper::Handle<Cookies> Cookies::Create(
+    v8::Isolate* isolate,
+    ElectronBrowserContext* browser_context) {
+  return gin_helper::CreateHandle(isolate, new Cookies{browser_context});
 }
 
 gin::ObjectTemplateBuilder Cookies::GetObjectTemplateBuilder(

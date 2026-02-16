@@ -75,7 +75,6 @@ Starting with the `index.html` file:
     <button id="reset-to-system">Reset to System Theme</button>
 
     <script src="renderer.js"></script>
-  </body>
 </body>
 </html>
 ```
@@ -136,6 +135,7 @@ Finally, the `main.js` file represents the main process and contains the actual 
 
 ```js
 const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron')
+
 const path = require('node:path')
 
 const createWindow = () => {

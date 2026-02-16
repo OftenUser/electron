@@ -6,8 +6,8 @@
 #define ELECTRON_SHELL_RENDERER_ELECTRON_RENDERER_CLIENT_H_
 
 #include <memory>
-#include <set>
 
+#include "base/containers/flat_set.h"
 #include "shell/renderer/renderer_client_base.h"
 
 namespace node {
@@ -29,15 +29,19 @@ class ElectronRendererClient : public RendererClientBase {
   ElectronRendererClient& operator=(const ElectronRendererClient&) = delete;
 
   // electron::RendererClientBase:
-  void DidCreateScriptContext(v8::Handle<v8::Context> context,
+  void DidCreateScriptContext(v8::Isolate* isolate,
+                              v8::Local<v8::Context> context,
                               content::RenderFrame* render_frame) override;
-  void WillReleaseScriptContext(v8::Handle<v8::Context> context,
+  void WillReleaseScriptContext(v8::Isolate* isolate,
+                                v8::Local<v8::Context> context,
                                 content::RenderFrame* render_frame) override;
 
  private:
   void UndeferLoad(content::RenderFrame* render_frame);
 
   // content::ContentRendererClient:
+  void PostIOThreadCreated(
+      base::SingleThreadTaskRunner* io_thread_task_runner) override;
   void RenderFrameCreated(content::RenderFrame*) override;
   void RunScriptsAtDocumentStart(content::RenderFrame* render_frame) override;
   void RunScriptsAtDocumentEnd(content::RenderFrame* render_frame) override;
@@ -45,6 +49,7 @@ class ElectronRendererClient : public RendererClientBase {
       v8::Local<v8::Context> context) override;
   void WillDestroyWorkerContextOnWorkerThread(
       v8::Local<v8::Context> context) override;
+  void SetUpWebAssemblyTrapHandler() override;
 
   node::Environment* GetEnvironment(content::RenderFrame* frame) const;
 
@@ -57,12 +62,12 @@ class ElectronRendererClient : public RendererClientBase {
   // The node::Environment::GetCurrent API does not return nullptr when it
   // is called for a context without node::Environment, so we have to keep
   // a book of the environments created.
-  std::set<std::shared_ptr<node::Environment>> environments_;
+  base::flat_set<std::shared_ptr<node::Environment>> environments_;
 
   // Getting main script context from web frame would lazily initializes
   // its script context. Doing so in a web page without scripts would trigger
   // assertion, so we have to keep a book of injected web frames.
-  std::set<content::RenderFrame*> injected_frames_;
+  base::flat_set<content::RenderFrame*> injected_frames_;
 };
 
 }  // namespace electron

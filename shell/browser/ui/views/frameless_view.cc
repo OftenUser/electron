@@ -5,9 +5,10 @@
 #include "shell/browser/ui/views/frameless_view.h"
 
 #include "shell/browser/native_window_views.h"
-#include "shell/browser/ui/views/inspectable_web_contents_view_views.h"
+#include "shell/browser/ui/inspectable_web_contents_view.h"
 #include "ui/aura/window.h"
 #include "ui/base/hit_test.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 
@@ -19,9 +20,6 @@ const int kResizeInsideBoundsSize = 5;
 const int kResizeAreaCornerSize = 16;
 
 }  // namespace
-
-// static
-const char FramelessView::kViewClassName[] = "FramelessView";
 
 FramelessView::FramelessView() = default;
 
@@ -91,16 +89,6 @@ int FramelessView::NonClientHitTest(const gfx::Point& point) {
   return HTCLIENT;
 }
 
-void FramelessView::GetWindowMask(const gfx::Size& size, SkPath* window_mask) {}
-
-void FramelessView::ResetWindowControls() {}
-
-void FramelessView::UpdateWindowIcon() {}
-
-void FramelessView::UpdateWindowTitle() {}
-
-void FramelessView::SizeConstraintsChanged() {}
-
 views::View* FramelessView::TargetForRect(views::View* root,
                                           const gfx::Rect& rect) {
   CHECK_EQ(root, this);
@@ -108,13 +96,14 @@ views::View* FramelessView::TargetForRect(views::View* root,
   if (NonClientHitTest(rect.origin()) != HTCLIENT)
     return this;
 
-  return NonClientFrameView::TargetForRect(root, rect);
+  return FrameView::TargetForRect(root, rect);
 }
 
-gfx::Size FramelessView::CalculatePreferredSize() const {
+gfx::Size FramelessView::CalculatePreferredSize(
+    const views::SizeBounds& available_size) const {
   return frame_->non_client_view()
-      ->GetWindowBoundsForClientBounds(
-          gfx::Rect(frame_->client_view()->GetPreferredSize()))
+      ->GetWindowBoundsForClientBounds(gfx::Rect(
+          frame_->client_view()->CalculatePreferredSize(available_size)))
       .size();
 }
 
@@ -129,8 +118,7 @@ gfx::Size FramelessView::GetMaximumSize() const {
   return size.IsEmpty() ? gfx::Size(INT_MAX, INT_MAX) : size;
 }
 
-const char* FramelessView::GetClassName() const {
-  return kViewClassName;
-}
+BEGIN_METADATA(FramelessView)
+END_METADATA
 
 }  // namespace electron

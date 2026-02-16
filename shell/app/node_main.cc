@@ -4,9 +4,11 @@
 
 #include "shell/app/node_main.h"
 
+#include <iostream>
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -15,22 +17,26 @@
 #include "base/containers/fixed_flat_set.h"
 #include "base/environment.h"
 #include "base/feature_list.h"
-#include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
+#include "base/logging.h"
+#include "base/strings/cstring_view.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "content/public/common/content_switches.h"
-#include "electron/electron_version.h"
 #include "electron/fuses.h"
+#include "electron/mas.h"
 #include "gin/array_buffer.h"
 #include "gin/public/isolate_holder.h"
 #include "gin/v8_initializer.h"
 #include "shell/app/uv_task_runner.h"
 #include "shell/browser/javascript_environment.h"
 #include "shell/common/api/electron_bindings.h"
+#include "shell/common/electron_command_line.h"
 #include "shell/common/gin_helper/dictionary.h"
 #include "shell/common/node_bindings.h"
 #include "shell/common/node_includes.h"
+#include "shell/common/node_util.h"
+#include "shell/common/options_switches.h"
+#include "shell/common/platform_util.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "chrome/child/v8_crashpad_support_win.h"
@@ -59,7 +65,7 @@ namespace {
 // See https://nodejs.org/api/cli.html#cli_options
 void ExitIfContainsDisallowedFlags(const std::vector<std::string>& argv) {
   // Options that are unilaterally disallowed.
-  static constexpr auto disallowed = base::MakeFixedFlatSet<base::StringPiece>({
+  static constexpr auto disallowed = base::MakeFixedFlatSet<std::string_view>({
       "--enable-fips",
       "--force-fips",
       "--openssl-config",
@@ -68,7 +74,7 @@ void ExitIfContainsDisallowedFlags(const std::vector<std::string>& argv) {
   });
 
   for (const auto& arg : argv) {
-    const auto key = base::StringPiece(arg).substr(0, arg.find('='));
+    const auto key = std::string_view{arg}.substr(0, arg.find('='));
     if (disallowed.contains(key)) {
       LOG(ERROR) << "The Node.js cli flag " << key
                  << " is not supported in Electron";
@@ -81,14 +87,28 @@ void ExitIfContainsDisallowedFlags(const std::vector<std::string>& argv) {
   }
 }
 
+#if BUILDFLAG(IS_MAC)
+// A list of node envs that may be used to inject scripts.
+constexpr base::cstring_view kHijackableEnvs[] = {"NODE_OPTIONS",
+                                                  "NODE_REPL_EXTERNAL_MODULE"};
+
+// Return true if there is any env in kHijackableEnvs.
+bool UnsetHijackableEnvs(base::Environment* env) {
+  bool has = false;
+  for (base::cstring_view name : kHijackableEnvs) {
+    if (env->HasVar(name)) {
+      env->UnSetVar(name);
+      has = true;
+    }
+  }
+  return has;
+}
+#endif
+
 #if IS_MAS_BUILD()
 void SetCrashKeyStub(const std::string& key, const std::string& value) {}
 void ClearCrashKeyStub(const std::string& key) {}
 #endif
-
-}  // namespace
-
-namespace electron {
 
 v8::Local<v8::Value> GetParameters(v8::Isolate* isolate) {
   std::map<std::string, std::string> keys;
@@ -98,17 +118,22 @@ v8::Local<v8::Value> GetParameters(v8::Isolate* isolate) {
   return gin::ConvertToV8(isolate, keys);
 }
 
-int NodeMain(int argc, char* argv[]) {
-  bool initialized = base::CommandLine::Init(argc, argv);
-  if (!initialized) {
-    LOG(ERROR) << "Failed to initialize CommandLine";
-    exit(1);
-  }
+}  // namespace
+
+namespace electron {
+
+int NodeMain() {
+  DCHECK(base::CommandLine::InitializedForCurrentProcess());
 
   auto os_env = base::Environment::Create();
   bool node_options_enabled = electron::fuses::IsNodeOptionsEnabled();
+  if (!node_options_enabled) {
+    os_env->UnSetVar("NODE_OPTIONS");
+    os_env->UnSetVar("NODE_EXTRA_CA_CERTS");
+  }
+
 #if BUILDFLAG(IS_MAC)
-  if (node_options_enabled && os_env->HasVar("NODE_OPTIONS")) {
+  if (!ProcessSignatureIsSameWithCurrentApp(getppid())) {
     // On macOS, it is forbidden to run sandboxed app with custom arguments
     // from another app, i.e. args are discarded in following call:
     //   exec("Sandboxed.app", ["--custom-args-will-be-discarded"])
@@ -117,31 +142,33 @@ int NodeMain(int argc, char* argv[]) {
     //   exec("Electron.app", {env: {ELECTRON_RUN_AS_NODE: "1",
     //                               NODE_OPTIONS: "--require 'bad.js'"}})
     // To prevent Electron apps from being used to work around macOS security
-    // restrictions, when NODE_OPTIONS is passed it will be checked whether
-    // this process is invoked by its own app.
-    if (!ProcessBelongToCurrentApp(getppid())) {
-      LOG(ERROR) << "NODE_OPTIONS is disabled because this process is invoked "
-                    "by other apps.";
-      node_options_enabled = false;
+    // restrictions, when the parent process is not part of the app bundle, all
+    // environment variables that may be used to inject scripts are removed.
+    if (UnsetHijackableEnvs(os_env.get())) {
+      LOG(ERROR) << "Node.js environment variables are disabled because this "
+                    "process is invoked by other apps.";
     }
   }
 #endif  // BUILDFLAG(IS_MAC)
-  if (!node_options_enabled) {
-    os_env->UnSetVar("NODE_OPTIONS");
-  }
 
 #if BUILDFLAG(IS_WIN)
   v8_crashpad_support::SetUp();
 #endif
 
+  auto* command_line = base::CommandLine::ForCurrentProcess();
+
 #if BUILDFLAG(IS_LINUX)
-  std::string fd_string, pid_string;
-  if (os_env->GetVar("CRASHDUMP_SIGNAL_FD", &fd_string) &&
-      os_env->GetVar("CRASHPAD_HANDLER_PID", &pid_string)) {
-    int fd = -1, pid = -1;
-    DCHECK(base::StringToInt(fd_string, &fd));
-    DCHECK(base::StringToInt(pid_string, &pid));
+  int pid = -1;
+  std::optional<std::string> fd_string = os_env->GetVar("CRASHDUMP_SIGNAL_FD");
+  std::optional<std::string> pid_string =
+      os_env->GetVar("CRASHPAD_HANDLER_PID");
+  if (fd_string && pid_string) {
+    int fd = -1;
+    DCHECK(base::StringToInt(fd_string.value(), &fd));
+    DCHECK(base::StringToInt(pid_string.value(), &pid));
     base::GlobalDescriptors::GetInstance()->Set(kCrashDumpSignal, fd);
+    command_line->AppendSwitchASCII(
+        crash_reporter::switches::kCrashpadHandlerPid, pid_string.value());
     // Following API is unsafe in multi-threaded scenario, but at this point
     // we are still single threaded.
     os_env->UnSetVar("CRASHDUMP_SIGNAL_FD");
@@ -164,21 +191,36 @@ int NodeMain(int argc, char* argv[]) {
     // Explicitly register electron's builtin bindings.
     NodeBindings::RegisterBuiltinBindings();
 
-    // Hack around with the argv pointer. Used for process.title = "blah".
-    argv = uv_setup_args(argc, argv);
-
     // Parse Node.js cli flags and strip out disallowed options.
-    std::vector<std::string> args(argv, argv + argc);
+    std::vector<std::string> args = ElectronCommandLine::AsUtf8();
     ExitIfContainsDisallowedFlags(args);
 
-    std::unique_ptr<node::InitializationResult> result =
+    uint64_t process_flags =
+        node::ProcessInitializationFlags::kNoInitializeV8 |
+        node::ProcessInitializationFlags::kNoInitializeNodeV8Platform;
+
+    if (command_line->HasSwitch(switches::kNoStdioInit)) {
+      process_flags |= node::ProcessInitializationFlags::kNoStdioInitialization;
+      // remove the option to avoid node error "bad option: --no-stdio-init"
+      std::string option = std::string("--") + switches::kNoStdioInit;
+      std::erase(args, option);
+    } else {
+#if BUILDFLAG(IS_WIN)
+      if (!platform_util::IsNulDeviceEnabled()) {
+        LOG(FATAL) << "Unable to open nul device needed for initialization,"
+                      "aborting startup. As a workaround, try starting with --"
+                   << switches::kNoStdioInit;
+      }
+#endif
+    }
+
+    std::shared_ptr<node::InitializationResult> result =
         node::InitializeOncePerProcess(
-            args,
-            {node::ProcessInitializationFlags::kNoInitializeV8,
-             node::ProcessInitializationFlags::kNoInitializeNodeV8Platform});
+            args, static_cast<node::ProcessInitializationFlags::Flags>(
+                      process_flags));
 
     for (const std::string& error : result->errors())
-      fprintf(stderr, "%s: %s\n", args[0].c_str(), error.c_str());
+      std::cerr << args[0] << ": " << error << '\n';
 
     if (result->early_return() != 0) {
       return result->exit_code();
@@ -187,10 +229,7 @@ int NodeMain(int argc, char* argv[]) {
 #if BUILDFLAG(IS_LINUX)
     // On Linux, initialize crashpad after Nodejs init phase so that
     // crash and termination signal handlers can be set by the crashpad client.
-    if (!pid_string.empty()) {
-      auto* command_line = base::CommandLine::ForCurrentProcess();
-      command_line->AppendSwitchASCII(
-          crash_reporter::switches::kCrashpadHandlerPid, pid_string);
+    if (pid != -1) {
       ElectronCrashReporterClient::Create();
       crash_reporter::InitializeCrashpad(false, "node");
       crash_keys::SetCrashKeysFromCommandLine(
@@ -238,8 +277,8 @@ int NodeMain(int argc, char* argv[]) {
 
       uint64_t env_flags = node::EnvironmentFlags::kDefaultFlags |
                            node::EnvironmentFlags::kHideConsoleWindows;
-      env = node::CreateEnvironment(
-          isolate_data, isolate->GetCurrentContext(), result->args(),
+      env = electron::util::CreateEnvironment(
+          isolate, isolate_data, isolate->GetCurrentContext(), result->args(),
           result->exec_args(),
           static_cast<node::EnvironmentFlags::Flags>(env_flags));
       CHECK_NE(nullptr, env);
@@ -263,15 +302,10 @@ int NodeMain(int argc, char* argv[]) {
 #endif
 
       process.Set("crashReporter", reporter);
-
-      gin_helper::Dictionary versions;
-      if (process.Get("versions", &versions)) {
-        versions.SetReadOnly(ELECTRON_PROJECT_NAME, ELECTRON_VERSION_STRING);
-      }
     }
 
     v8::HandleScope scope(isolate);
-    node::LoadEnvironment(env, node::StartExecutionCallback{});
+    node::LoadEnvironment(env, node::StartExecutionCallback{}, &OnNodePreload);
 
     // Potential reasons we get Nothing here may include: the env
     // is stopping, or the user hooks process.emit('exit').

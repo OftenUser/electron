@@ -4,6 +4,7 @@
 
 #include "shell/browser/extensions/electron_extension_system_factory.h"
 
+#include "base/no_destructor.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "extensions/browser/extension_prefs_factory.h"
 #include "extensions/browser/extension_registry_factory.h"
@@ -21,7 +22,8 @@ ExtensionSystem* ElectronExtensionSystemFactory::GetForBrowserContext(
 
 // static
 ElectronExtensionSystemFactory* ElectronExtensionSystemFactory::GetInstance() {
-  return base::Singleton<ElectronExtensionSystemFactory>::get();
+  static base::NoDestructor<ElectronExtensionSystemFactory> instance;
+  return instance.get();
 }
 
 ElectronExtensionSystemFactory::ElectronExtensionSystemFactory()
@@ -33,9 +35,10 @@ ElectronExtensionSystemFactory::ElectronExtensionSystemFactory()
 
 ElectronExtensionSystemFactory::~ElectronExtensionSystemFactory() = default;
 
-KeyedService* ElectronExtensionSystemFactory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+ElectronExtensionSystemFactory::BuildServiceInstanceForBrowserContext(
     BrowserContext* context) const {
-  return new ElectronExtensionSystem(context);
+  return std::make_unique<ElectronExtensionSystem>(context);
 }
 
 BrowserContext* ElectronExtensionSystemFactory::GetBrowserContextToUse(

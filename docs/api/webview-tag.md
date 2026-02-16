@@ -30,8 +30,10 @@ rendered.
 Unlike an `iframe`, the `webview` runs in a separate process than your
 app. It doesn't have the same permissions as your web page and all interactions
 between your app and embedded content will be asynchronous. This keeps your app
-safe from the embedded content. **Note:** Most methods called on the
-webview from the host page require a synchronous call to the main process.
+safe from the embedded content.
+
+> [!NOTE]
+> Most methods called on the webview from the host page require a synchronous call to the main process.
 
 ## Example
 
@@ -252,7 +254,8 @@ The full list of supported feature strings can be found in the
 
 The `webview` tag has the following methods:
 
-**Note:** The webview element must be loaded before using the methods.
+> [!NOTE]
+> The webview element must be loaded before using the methods.
 
 **Example**
 
@@ -285,7 +288,7 @@ e.g. the `http://` or `file://`.
 
 * `url` string
 * `options` Object (optional)
-  * `headers` Record<string, string> (optional) - HTTP request headers.
+  * `headers` Record\<string, string\> (optional) - HTTP request headers.
 
 Initiates a download of the resource at `url` without navigating.
 
@@ -578,13 +581,14 @@ Stops any `findInPage` request for the `webview` with the provided `action`.
     * `from` number - Index of the first page to print (0-based).
     * `to` number - Index of the last page to print (inclusive) (0-based).
   * `duplexMode` string (optional) - Set the duplex mode of the printed web page. Can be `simplex`, `shortEdge`, or `longEdge`.
-  * `dpi` Record<string, number> (optional)
+  * `dpi` Record\<string, number\> (optional)
     * `horizontal` number (optional) - The horizontal dpi.
     * `vertical` number (optional) - The vertical dpi.
   * `header` string (optional) - string to be printed as page header.
   * `footer` string (optional) - string to be printed as page footer.
   * `pageSize` string | Size (optional) - Specify page size of the printed document. Can be `A3`,
   `A4`, `A5`, `Legal`, `Letter`, `Tabloid` or an Object containing `height` in microns.
+  * `usePrinterDefaultPageSize` boolean (optional) - Whether to use the system's default page size. Default is `false`. Cannot be combined with `pageSize`. When `deviceName` is provided, uses the default page size of that specific printer. When `deviceName` is not provided, uses the default page size of the system's default printer. If the printer's default page size cannot be retrieved, falls back to A4 (210mm x 297mm).
 
 Returns `Promise<void>`
 
@@ -609,6 +613,7 @@ Prints `webview`'s web page. Same as `webContents.print([options])`.
   * `footerTemplate` string (optional) - HTML template for the print footer. Should use the same format as the `headerTemplate`.
   * `preferCSSPageSize` boolean (optional) - Whether or not to prefer page size as defined by css. Defaults to false, in which case the content will be scaled to fit the paper size.
   * `generateTaggedPDF` boolean (optional) _Experimental_ - Whether or not to generate a tagged (accessible) PDF. Defaults to false. As this property is experimental, the generated PDF may not adhere fully to PDF/UA and WCAG standards.
+  * `generateDocumentOutline` boolean (optional) _Experimental_ - Whether or not to generate a PDF document outline from content headers. Defaults to false.
 
 Returns `Promise<Uint8Array>` - Resolves with the generated PDF data.
 
@@ -678,7 +683,8 @@ increment above or below represents zooming 20% larger or smaller to default
 limits of 300% and 50% of original size, respectively. The formula for this is
 `scale := 1.2 ^ level`.
 
-> **NOTE**: The zoom policy at the Chromium level is same-origin, meaning that the
+> [!NOTE]
+> The zoom policy at the Chromium level is same-origin, meaning that the
 > zoom level for a specific domain propagates across all instances of windows with
 > the same domain. Differentiating the window URLs will make zoom work per-window.
 
@@ -982,6 +988,7 @@ webview.send('ping')
 ```js
 // In guest page.
 const { ipcRenderer } = require('electron')
+
 ipcRenderer.on('ping', () => {
   ipcRenderer.sendToHost('pong')
 })
@@ -995,15 +1002,6 @@ Returns:
 
 Fired when the renderer process unexpectedly disappears. This is normally
 because it was crashed or killed.
-
-### Event: 'plugin-crashed'
-
-Returns:
-
-* `name` string
-* `version` string
-
-Fired when a plugin process is crashed.
 
 ### Event: 'destroyed'
 
@@ -1044,6 +1042,15 @@ Returns:
 * `url` string - URL of the link that was clicked or selected.
 
 Emitted when a link is clicked in DevTools or 'Open in new tab' is selected for a link in its context menu.
+
+#### Event: 'devtools-search-query'
+
+Returns:
+
+* `event` Event
+* `query` string - text to query for.
+
+Emitted when 'Search' is selected for text in its context menu.
 
 ### Event: 'devtools-opened'
 
@@ -1108,9 +1115,6 @@ Returns:
     `input-text`, `input-time`, `input-url`, `input-week`, `output`, `reset-button`,
     `select-list`, `select-list`, `select-multiple`, `select-one`, `submit-button`,
     and `text-area`,
-  * `inputFieldType` string _Deprecated_ - If the context menu was invoked on an
-    input field, the type of that field. Possible values include `none`,
-    `plainText`, `password`, `other`.
   * `spellcheckEnabled` boolean - If the context is editable, whether or not spellchecking is enabled.
   * `menuSourceType` string - Input source that invoked the context menu.
     Can be `none`, `mouse`, `keyboard`, `touch`, `touchMenu`, `longPress`, `longTap`, `touchHandle`, `stylus`, `adjustSelection`, or `adjustSelectionReset`.

@@ -1,5 +1,7 @@
+import { BaseWindow, BrowserWindow, webContents } from 'electron/main';
+
 import { expect } from 'chai';
-import { BaseWindow, BrowserWindow } from 'electron/main';
+
 import { once } from 'node:events';
 
 async function ensureWindowIsClosed (window: BaseWindow | null) {
@@ -29,19 +31,40 @@ export const closeWindow = async (
   await ensureWindowIsClosed(window);
 
   if (assertNotWindows) {
-    const windows = BaseWindow.getAllWindows();
-    try {
-      expect(windows).to.have.lengthOf(0);
-    } finally {
-      for (const win of windows) {
-        await ensureWindowIsClosed(win);
-      }
+    let windows = BaseWindow.getAllWindows();
+    if (windows.length > 0) {
+      setTimeout(async () => {
+        // Wait until next tick to assert that all windows have been closed.
+        windows = BaseWindow.getAllWindows();
+        try {
+          expect(windows).to.have.lengthOf(0);
+        } finally {
+          for (const win of windows) {
+            await ensureWindowIsClosed(win);
+          }
+        }
+      });
     }
   }
 };
 
-export async function closeAllWindows () {
+export async function closeAllWindows (assertNotWindows = false) {
+  let windowsClosed = 0;
   for (const w of BaseWindow.getAllWindows()) {
-    await closeWindow(w, { assertNotWindows: false });
+    await closeWindow(w, { assertNotWindows });
+    windowsClosed++;
   }
+  return windowsClosed;
+}
+
+export async function cleanupWebContents () {
+  let webContentsDestroyed = 0;
+  const existingWCS = webContents.getAllWebContents();
+  for (const contents of existingWCS) {
+    const isDestroyed = once(contents, 'destroyed');
+    contents.destroy();
+    await isDestroyed;
+    webContentsDestroyed++;
+  }
+  return webContentsDestroyed;
 }

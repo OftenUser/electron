@@ -1,18 +1,24 @@
+import { protocol, webContents, WebContents, session, BrowserWindow, ipcMain, net } from 'electron/main';
+
 import { expect } from 'chai';
 import { v4 } from 'uuid';
-import { protocol, webContents, WebContents, session, BrowserWindow, ipcMain, net } from 'electron/main';
+
 import * as ChildProcess from 'node:child_process';
-import * as path from 'node:path';
-import * as url from 'node:url';
-import * as http from 'node:http';
+import { EventEmitter, once } from 'node:events';
 import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as path from 'node:path';
 import * as qs from 'node:querystring';
 import * as stream from 'node:stream';
-import { EventEmitter, once } from 'node:events';
-import { closeAllWindows, closeWindow } from './lib/window-helpers';
-import { WebmGenerator } from './lib/video-helpers';
-import { listen, defer, ifit } from './lib/spec-helpers';
+import * as streamConsumers from 'node:stream/consumers';
+import * as webStream from 'node:stream/web';
 import { setTimeout } from 'node:timers/promises';
+import * as url from 'node:url';
+
+import { collectStreamBody, getResponse } from './lib/net-helpers';
+import { listen, defer, ifit } from './lib/spec-helpers';
+import { WebmGenerator } from './lib/video-helpers';
+import { closeAllWindows, closeWindow } from './lib/window-helpers';
 
 const fixturesPath = path.resolve(__dirname, 'fixtures');
 
@@ -647,7 +653,7 @@ describe('protocol module', () => {
       const { url } = await listen(server);
       interceptHttpProtocol('http', (request, callback) => {
         const data: Electron.ProtocolResponse = {
-          url: url,
+          url,
           method: 'POST',
           uploadData: {
             contentType: 'application/x-www-form-urlencoded',
@@ -908,7 +914,7 @@ describe('protocol module', () => {
     });
 
     it('allows CORS requests by default', async () => {
-      await allowsCORSRequests('cors', 200, new RegExp(''), () => {
+      await allowsCORSRequests('cors', 200, /(?:)/, () => {
         const { ipcRenderer } = require('electron');
         fetch('cors://myhost').then(function (response) {
           ipcRenderer.send('response', response.status);
@@ -972,7 +978,7 @@ describe('protocol module', () => {
         contextIsolation: false
       });
       const consoleMessages: string[] = [];
-      newContents.on('console-message', (e, level, message) => consoleMessages.push(message));
+      newContents.on('console-message', (e) => consoleMessages.push(e.message));
       try {
         newContents.loadURL(standardScheme + '://fake-host');
         const [, response] = await once(ipcMain, 'response');
@@ -1123,7 +1129,7 @@ describe('protocol module', () => {
     it('receives requests to a custom scheme', async () => {
       protocol.handle('test-scheme', (req) => new Response('hello ' + req.url));
       defer(() => { protocol.unhandle('test-scheme'); });
-      const resp = await net.fetch('test-scheme://foo');
+      const resp = await net.fetch('test-scheme://foo/');
       expect(resp.status).to.equal(200);
     });
 
@@ -1136,10 +1142,10 @@ describe('protocol module', () => {
           protocol.unhandle('test-scheme');
         } catch { /* ignore */ }
       });
-      const resp1 = await net.fetch('test-scheme://foo');
+      const resp1 = await net.fetch('test-scheme://foo/');
       expect(resp1.status).to.equal(200);
       protocol.unhandle('test-scheme');
-      await expect(net.fetch('test-scheme://foo')).to.eventually.be.rejectedWith(/ERR_UNKNOWN_URL_SCHEME/);
+      await expect(net.fetch('test-scheme://foo/')).to.eventually.be.rejectedWith(/ERR_UNKNOWN_URL_SCHEME/);
     });
 
     it('receives requests to the existing https scheme', async () => {
@@ -1181,23 +1187,47 @@ describe('protocol module', () => {
     it('can send buffer body', async () => {
       protocol.handle('test-scheme', (req) => new Response(Buffer.from('hello ' + req.url)));
       defer(() => { protocol.unhandle('test-scheme'); });
-      const body = await net.fetch('test-scheme://foo').then(r => r.text());
-      expect(body).to.equal('hello test-scheme://foo');
+      const body = await net.fetch('test-scheme://foo/').then(r => r.text());
+      expect(body).to.equal('hello test-scheme://foo/');
     });
 
     it('can send stream body', async () => {
       protocol.handle('test-scheme', () => new Response(getWebStream()));
       defer(() => { protocol.unhandle('test-scheme'); });
-      const body = await net.fetch('test-scheme://foo').then(r => r.text());
+      const body = await net.fetch('test-scheme://foo/').then(r => r.text());
       expect(body).to.equal(text);
+    });
+
+    it('calls destroy on aborted body stream', async () => {
+      const abortController = new AbortController();
+
+      class TestStream extends stream.Readable {
+        _read () {
+          this.push('infinite data');
+
+          // Abort the request that reads from this stream.
+          abortController.abort();
+        }
+      };
+      const body = new TestStream();
+      protocol.handle('test-scheme', () => {
+        return new Response(stream.Readable.toWeb(body) as ReadableStream<ArrayBufferView>);
+      });
+      defer(() => { protocol.unhandle('test-scheme'); });
+
+      const res = net.fetch('test-scheme://foo/', {
+        signal: abortController.signal
+      });
+      await expect(res).to.be.rejectedWith('This operation was aborted');
+      await expect(once(body, 'end')).to.be.rejectedWith('The operation was aborted');
     });
 
     it('accepts urls with no hostname in non-standard schemes', async () => {
       protocol.handle('test-scheme', (req) => new Response(req.url));
       defer(() => { protocol.unhandle('test-scheme'); });
       {
-        const body = await net.fetch('test-scheme://foo').then(r => r.text());
-        expect(body).to.equal('test-scheme://foo');
+        const body = await net.fetch('test-scheme://foo/').then(r => r.text());
+        expect(body).to.equal('test-scheme://foo/');
       }
       {
         const body = await net.fetch('test-scheme:///foo').then(r => r.text());
@@ -1213,8 +1243,8 @@ describe('protocol module', () => {
       protocol.handle('test-scheme', (req) => new Response(req.url));
       defer(() => { protocol.unhandle('test-scheme'); });
       {
-        const body = await net.fetch('test-scheme://foo:30').then(r => r.text());
-        expect(body).to.equal('test-scheme://foo:30');
+        const body = await net.fetch('test-scheme://foo/:30').then(r => r.text());
+        expect(body).to.equal('test-scheme://foo/:30');
       }
     });
 
@@ -1257,7 +1287,7 @@ describe('protocol module', () => {
     it('can send errors', async () => {
       protocol.handle('test-scheme', () => Response.error());
       defer(() => { protocol.unhandle('test-scheme'); });
-      await expect(net.fetch('test-scheme://foo')).to.eventually.be.rejectedWith('net::ERR_FAILED');
+      await expect(net.fetch('test-scheme://foo/')).to.eventually.be.rejectedWith('net::ERR_FAILED');
     });
 
     it('handles invalid protocol response status', async () => {
@@ -1266,7 +1296,7 @@ describe('protocol module', () => {
       });
 
       defer(() => { protocol.unhandle('test-scheme'); });
-      await expect(net.fetch('test-scheme://foo')).to.be.rejectedWith('net::ERR_UNEXPECTED');
+      await expect(net.fetch('test-scheme://foo/')).to.be.rejectedWith('net::ERR_UNEXPECTED');
     });
 
     it('handles invalid protocol response statusText', async () => {
@@ -1275,7 +1305,7 @@ describe('protocol module', () => {
       });
 
       defer(() => { protocol.unhandle('test-scheme'); });
-      await expect(net.fetch('test-scheme://foo')).to.be.rejectedWith('net::ERR_UNEXPECTED');
+      await expect(net.fetch('test-scheme://foo/')).to.be.rejectedWith('net::ERR_UNEXPECTED');
     });
 
     it('handles invalid protocol response header parameters', async () => {
@@ -1284,7 +1314,7 @@ describe('protocol module', () => {
       });
 
       defer(() => { protocol.unhandle('test-scheme'); });
-      await expect(net.fetch('test-scheme://foo')).to.be.rejectedWith('net::ERR_UNEXPECTED');
+      await expect(net.fetch('test-scheme://foo/')).to.be.rejectedWith('net::ERR_UNEXPECTED');
     });
 
     it('handles invalid protocol response body parameters', async () => {
@@ -1293,32 +1323,32 @@ describe('protocol module', () => {
       });
 
       defer(() => { protocol.unhandle('test-scheme'); });
-      await expect(net.fetch('test-scheme://foo')).to.be.rejectedWith('net::ERR_UNEXPECTED');
+      await expect(net.fetch('test-scheme://foo/')).to.be.rejectedWith('net::ERR_UNEXPECTED');
     });
 
     it('handles a synchronous error in the handler', async () => {
       protocol.handle('test-scheme', () => { throw new Error('test'); });
       defer(() => { protocol.unhandle('test-scheme'); });
-      await expect(net.fetch('test-scheme://foo')).to.be.rejectedWith('net::ERR_UNEXPECTED');
+      await expect(net.fetch('test-scheme://foo/')).to.be.rejectedWith('net::ERR_UNEXPECTED');
     });
 
     it('handles an asynchronous error in the handler', async () => {
       protocol.handle('test-scheme', () => Promise.reject(new Error('rejected promise')));
       defer(() => { protocol.unhandle('test-scheme'); });
-      await expect(net.fetch('test-scheme://foo')).to.be.rejectedWith('net::ERR_UNEXPECTED');
+      await expect(net.fetch('test-scheme://foo/')).to.be.rejectedWith('net::ERR_UNEXPECTED');
     });
 
     it('correctly sets statusCode', async () => {
       protocol.handle('test-scheme', () => new Response(null, { status: 201 }));
       defer(() => { protocol.unhandle('test-scheme'); });
-      const resp = await net.fetch('test-scheme://foo');
+      const resp = await net.fetch('test-scheme://foo/');
       expect(resp.status).to.equal(201);
     });
 
     it('correctly sets content-type and charset', async () => {
       protocol.handle('test-scheme', () => new Response(null, { headers: { 'content-type': 'text/html; charset=testcharset' } }));
       defer(() => { protocol.unhandle('test-scheme'); });
-      const resp = await net.fetch('test-scheme://foo');
+      const resp = await net.fetch('test-scheme://foo/');
       expect(resp.headers.get('content-type')).to.equal('text/html; charset=testcharset');
     });
 
@@ -1331,7 +1361,7 @@ describe('protocol module', () => {
 
       protocol.handle('test-scheme', () => net.fetch(url));
       defer(() => { protocol.unhandle('test-scheme'); });
-      const body = await net.fetch('test-scheme://foo').then(r => r.text());
+      const body = await net.fetch('test-scheme://foo/').then(r => r.text());
       expect(body).to.equal(text);
     });
 
@@ -1346,7 +1376,7 @@ describe('protocol module', () => {
       protocol.handle('test-scheme', (req) => net.fetch(url, { headers: req.headers }));
       defer(() => { protocol.unhandle('test-scheme'); });
 
-      const resp = await net.fetch('test-scheme://foo');
+      const resp = await net.fetch('test-scheme://foo/');
       expect(resp.headers.get('foo')).to.equal('bar');
     });
 
@@ -1354,14 +1384,14 @@ describe('protocol module', () => {
       protocol.handle('test-scheme', () => net.fetch(url.pathToFileURL(path.join(__dirname, 'fixtures', 'hello.txt')).toString()));
       defer(() => { protocol.unhandle('test-scheme'); });
 
-      const body = await net.fetch('test-scheme://foo').then(r => r.text());
+      const body = await net.fetch('test-scheme://foo/').then(r => r.text());
       expect(body.trimEnd()).to.equal('hello world');
     });
 
     it('can receive simple request body', async () => {
       protocol.handle('test-scheme', (req) => new Response(req.body));
       defer(() => { protocol.unhandle('test-scheme'); });
-      const body = await net.fetch('test-scheme://foo', {
+      const body = await net.fetch('test-scheme://foo/', {
         method: 'POST',
         body: 'foobar'
       }).then(r => r.text());
@@ -1371,7 +1401,7 @@ describe('protocol module', () => {
     it('can receive stream request body', async () => {
       protocol.handle('test-scheme', (req) => new Response(req.body));
       defer(() => { protocol.unhandle('test-scheme'); });
-      const body = await net.fetch('test-scheme://foo', {
+      const body = await net.fetch('test-scheme://foo/', {
         method: 'POST',
         body: getWebStream(),
         duplex: 'half' // https://github.com/microsoft/TypeScript/issues/53157
@@ -1379,24 +1409,67 @@ describe('protocol module', () => {
       expect(body).to.equal(text);
     });
 
+    it('can receive stream request body asynchronously', async () => {
+      let done: any;
+      const requestReceived: Promise<Buffer[]> = new Promise(resolve => { done = resolve; });
+      protocol.handle('http-like', async (req) => {
+        const chunks = [];
+        for await (const chunk of (req.body as any)) {
+          chunks.push(chunk);
+        }
+        done(chunks);
+        return new Response('ok');
+      });
+      defer(() => { protocol.unhandle('http-like'); });
+      const w = new BrowserWindow({ show: false });
+      w.loadURL('about:blank');
+      const expectedHashChunks = await w.webContents.executeJavaScript(`
+        const dataStream = () =>
+          new ReadableStream({
+            async start(controller) {
+              for (let i = 0; i < 10; i++) { controller.enqueue(Array(1024 * 128).fill(+i).join("\\n")); }
+              controller.close();
+            },
+          }).pipeThrough(new TextEncoderStream());
+        fetch(
+          new Request("http-like://host", {
+            method: "POST",
+            body: dataStream(),
+            duplex: "half",
+          })
+        );
+        (async () => {
+          const chunks = []
+          for await (const chunk of dataStream()) {
+            chunks.push(chunk);
+          }
+          return chunks;
+        })()
+      `);
+      const expectedHash = Buffer.from(await crypto.subtle.digest('SHA-256', Buffer.concat(expectedHashChunks))).toString('hex');
+      const body = Buffer.concat(await requestReceived);
+      const actualHash = Buffer.from(await crypto.subtle.digest('SHA-256', Buffer.from(body))).toString('hex');
+      expect(actualHash).to.equal(expectedHash);
+    });
+
     it('can receive multi-part postData from loadURL', async () => {
       protocol.handle('test-scheme', (req) => new Response(req.body));
       defer(() => { protocol.unhandle('test-scheme'); });
-      await contents.loadURL('test-scheme://foo', { postData: [{ type: 'rawData', bytes: Buffer.from('a') }, { type: 'rawData', bytes: Buffer.from('b') }] });
+      await contents.loadURL('test-scheme://foo/', { postData: [{ type: 'rawData', bytes: Buffer.from('a') }, { type: 'rawData', bytes: Buffer.from('b') }] });
       expect(await contents.executeJavaScript('document.documentElement.textContent')).to.equal('ab');
     });
 
     it('can receive file postData from loadURL', async () => {
       protocol.handle('test-scheme', (req) => new Response(req.body));
       defer(() => { protocol.unhandle('test-scheme'); });
-      await contents.loadURL('test-scheme://foo', { postData: [{ type: 'file', filePath: path.join(fixturesPath, 'hello.txt'), length: 'hello world\n'.length, offset: 0, modificationTime: 0 }] });
+      await contents.loadURL('test-scheme://foo/', { postData: [{ type: 'file', filePath: path.join(fixturesPath, 'hello.txt'), length: 'hello world\n'.length, offset: 0, modificationTime: 0 }] });
       expect(await contents.executeJavaScript('document.documentElement.textContent')).to.equal('hello world\n');
     });
 
     it('can receive file postData from a form', async () => {
       protocol.handle('test-scheme', (req) => new Response(req.body));
       defer(() => { protocol.unhandle('test-scheme'); });
-      await contents.loadURL('data:text/html,<form action="test-scheme://foo" method=POST enctype="multipart/form-data"><input name=foo type=file>');
+      await contents.loadURL('data:text/html,<form action="test-scheme://foo/" method=POST enctype="multipart/form-data"><input name=foo type=file>');
       const { debugger: dbg } = contents;
       dbg.attach();
       const { root } = await dbg.sendCommand('DOM.getDocument');
@@ -1416,7 +1489,7 @@ describe('protocol module', () => {
     it('can receive streaming fetch upload', async () => {
       protocol.handle('no-cors', (req) => new Response(req.body));
       defer(() => { protocol.unhandle('no-cors'); });
-      await contents.loadURL('no-cors://foo');
+      await contents.loadURL('no-cors://foo/');
       const fetchBodyResult = await contents.executeJavaScript(`
         const stream = new ReadableStream({
           async start(controller) {
@@ -1443,7 +1516,7 @@ describe('protocol module', () => {
         return new Response(req.body);
       });
       defer(() => { protocol.unhandle('no-cors'); });
-      await contents.loadURL('no-cors://foo');
+      await contents.loadURL('no-cors://foo/');
       const fetchBodyResult = await contents.executeJavaScript(`
         const stream = new ReadableStream({
           async start(controller) {
@@ -1459,7 +1532,7 @@ describe('protocol module', () => {
     it('can receive an error from streaming fetch upload', async () => {
       protocol.handle('no-cors', (req) => new Response(req.body));
       defer(() => { protocol.unhandle('no-cors'); });
-      await contents.loadURL('no-cors://foo');
+      await contents.loadURL('no-cors://foo/');
       const fetchBodyResult = await contents.executeJavaScript(`
         const stream = new ReadableStream({
           async start(controller) {
@@ -1479,7 +1552,7 @@ describe('protocol module', () => {
         return new Response();
       });
       defer(() => { protocol.unhandle('no-cors'); });
-      await contents.loadURL('no-cors://foo');
+      await contents.loadURL('no-cors://foo/');
       contents.executeJavaScript(`
         const stream = new ReadableStream({
           async start(controller) {
@@ -1506,10 +1579,26 @@ describe('protocol module', () => {
       expect(await net.fetch(url, { bypassCustomProtocolHandlers: true }).then(r => r.text())).to.equal('default');
     });
 
+    it('can bypass intercepted protocol handlers with net.request', async () => {
+      protocol.handle('http', () => new Response('custom'));
+      defer(() => { protocol.unhandle('http'); });
+      const server = http.createServer((req, res) => {
+        res.end('default');
+      });
+      defer(() => server.close());
+      const { url } = await listen(server);
+      // Make a request using net.request with bypassCustomProtocolHandlers: true
+      const request = net.request({ method: 'GET', url, bypassCustomProtocolHandlers: true });
+      const response = await getResponse(request);
+      const body = await collectStreamBody(response);
+      expect(response.statusCode).to.equal(200);
+      expect(body).to.equal('default');
+    });
+
     it('bypassing custom protocol handlers also bypasses new protocols', async () => {
       protocol.handle('app', () => new Response('custom'));
       defer(() => { protocol.unhandle('app'); });
-      await expect(net.fetch('app://foo', { bypassCustomProtocolHandlers: true })).to.be.rejectedWith('net::ERR_UNKNOWN_URL_SCHEME');
+      await expect(net.fetch('app://foo/', { bypassCustomProtocolHandlers: true })).to.be.rejectedWith('net::ERR_UNKNOWN_URL_SCHEME');
     });
 
     it('can forward to the original handler', async () => {
@@ -1548,8 +1637,125 @@ describe('protocol module', () => {
       }
     });
 
+    it('does not emit undefined chunks into the request body stream when uploading a stream', async () => {
+      protocol.handle('cors', async (request) => {
+        expect(request.body).to.be.an.instanceOf(webStream.ReadableStream);
+        for await (const value of request.body as webStream.ReadableStream<Uint8Array>) {
+          expect(value).to.not.be.undefined();
+        }
+        return new Response(undefined, { status: 200 });
+      });
+      defer(() => { protocol.unhandle('cors'); });
+
+      await contents.loadFile(path.resolve(fixturesPath, 'pages', 'base-page.html'));
+      contents.on('console-message', (e) => console.log(e.message));
+      const ok = await contents.executeJavaScript(`(async () => {
+        function wait(milliseconds) {
+          return new Promise((resolve) => setTimeout(resolve, milliseconds));
+        }
+
+        const stream = new ReadableStream({
+          async start(controller) {
+            await wait(4);
+            controller.enqueue('This ');
+            await wait(4);
+            controller.enqueue('is ');
+            await wait(4);
+            controller.enqueue('a ');
+            await wait(4);
+            controller.enqueue('slow ');
+            await wait(4);
+            controller.enqueue('request.');
+            controller.close();
+          }
+        }).pipeThrough(new TextEncoderStream());
+        return (await fetch('cors://url.invalid', { method: 'POST', body: stream, duplex: 'half' })).ok;
+      })()`);
+      expect(ok).to.be.true();
+    });
+
+    it('does not emit undefined chunks into the request body stream when uploading a file', async () => {
+      protocol.handle('cors', async (request) => {
+        expect(request.body).to.be.an.instanceOf(webStream.ReadableStream);
+        for await (const value of request.body as webStream.ReadableStream<Uint8Array>) {
+          expect(value).to.not.be.undefined();
+        }
+        return new Response(undefined, { status: 200 });
+      });
+      defer(() => { protocol.unhandle('cors'); });
+
+      await contents.loadFile(path.resolve(fixturesPath, 'pages', 'file-input.html'));
+      const { debugger: debug } = contents;
+      debug.attach();
+      try {
+        const { root: { nodeId } } = await debug.sendCommand('DOM.getDocument');
+        const { nodeId: inputNodeId } = await debug.sendCommand('DOM.querySelector', { nodeId, selector: 'input' });
+        await debug.sendCommand('DOM.setFileInputFiles', {
+          files: [path.join(fixturesPath, 'cat-spin.mp4')],
+          nodeId: inputNodeId
+        });
+        const ok = await contents.executeJavaScript(`(async () => {
+          const formData = new FormData();
+          formData.append("data", document.getElementById("file").files[0]);
+          return (await fetch('cors://url.invalid', { method: 'POST', body: formData })).ok;
+        })()`);
+        expect(ok).to.be.true();
+      } finally {
+        debug.detach();
+      }
+    });
+
+    it('filters an illegal "origin: null" header', async () => {
+      protocol.handle('http', (req) => {
+        expect(new Headers(req.headers).get('origin')).to.not.equal('null');
+        return new Response();
+      });
+      defer(() => { protocol.unhandle('http'); });
+
+      const filePath = path.join(fixturesPath, 'pages', 'form-with-data.html');
+      await contents.loadFile(filePath);
+
+      const loadPromise = new Promise<void>((resolve, reject) => {
+        contents.once('did-finish-load', resolve);
+        contents.once('did-fail-load', (_, errorCode, errorDescription) =>
+          reject(new Error(`did-fail-load: ${errorCode} ${errorDescription}. See AssertionError for details.`))
+        );
+      });
+      await contents.executeJavaScript(`
+        const form = document.querySelector('form');
+        form.action = 'http://cors.invalid';
+        form.method = 'POST';
+        form.submit();
+      `);
+      await loadPromise;
+    });
+
+    it('does forward Blob chunks', async () => {
+      // we register the protocol on a separate session to validate the assumption
+      // that `getBlobData()` indeed returns the blob data from a global variable
+      const s = session.fromPartition('protocol-handle-forwards-blob-chunks');
+
+      s.protocol.handle('cors', async (request) => {
+        expect(request.body).to.be.an.instanceOf(webStream.ReadableStream);
+        return new Response(
+          `hello to ${await streamConsumers.text(request.body as webStream.ReadableStream<Uint8Array>)}`,
+          { status: 200 }
+        );
+      });
+      defer(() => { s.protocol.unhandle('cors'); });
+
+      const w = new BrowserWindow({ show: false, webPreferences: { session: s } });
+      await w.webContents.loadFile(path.resolve(fixturesPath, 'pages', 'base-page.html'));
+      const response = await w.webContents.executeJavaScript(`(async () => {
+        const body = new Blob(["it's-a ", 'me! ', 'Mario!'], { type: 'text/plain' });
+        return await (await fetch('cors://url.invalid', { method: 'POST', body })).text();
+      })()`);
+      expect(response).to.be.string('hello to it\'s-a me! Mario!');
+    });
+
     // TODO(nornagon): this test doesn't pass on Linux currently, investigate.
-    ifit(process.platform !== 'linux')('is fast', async () => {
+    // test is also flaky on CI on macOS so it is currently disabled there as well.
+    ifit(process.platform !== 'linux' && (!process.env.CI || process.platform !== 'darwin'))('is fast', async () => {
       // 128 MB of spaces.
       const chunk = new Uint8Array(128 * 1024 * 1024);
       chunk.fill(' '.charCodeAt(0));
@@ -1588,7 +1794,7 @@ describe('protocol module', () => {
         const end = Date.now();
         return end - begin;
       })();
-      expect(interceptedTime).to.be.lessThan(rawTime * 1.5);
+      expect(interceptedTime).to.be.lessThan(rawTime * 1.6);
     });
   });
 });

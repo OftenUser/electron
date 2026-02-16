@@ -6,30 +6,31 @@
 #define ELECTRON_SHELL_BROWSER_BROWSER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "base/compiler_specific.h"
+#include "base/files/file_path.h"
 #include "base/observer_list.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/values.h"
-#include "gin/dictionary.h"
-#include "shell/browser/browser_observer.h"
 #include "shell/browser/window_list_observer.h"
 #include "shell/common/gin_helper/promise.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
-#include "base/files/file_path.h"
 #include "shell/browser/ui/win/taskbar_host.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
+#include "base/time/time.h"
 #include "ui/base/cocoa/secure_password_input.h"
 #endif
 
-namespace base {
-class FilePath;
+class GURL;
+
+namespace gin {
+class Arguments;
 }
 
 namespace gin_helper {
@@ -38,10 +39,53 @@ class Arguments;
 
 namespace electron {
 
+class BrowserObserver;
 class ElectronMenuModel;
 
+#if BUILDFLAG(IS_WIN)
+struct LaunchItem {
+  std::wstring name;
+  std::wstring path;
+  std::wstring scope;
+  std::vector<std::wstring> args;
+  bool enabled = true;
+
+  LaunchItem();
+  ~LaunchItem();
+  LaunchItem(const LaunchItem&);
+};
+#endif
+
+struct LoginItemSettings {
+  bool open_at_login = false;
+  bool open_as_hidden = false;
+  bool restore_state = false;
+  bool opened_at_login = false;
+  bool opened_as_hidden = false;
+  std::u16string path;
+  std::vector<std::u16string> args;
+
+#if BUILDFLAG(IS_MAC)
+  std::string type = "mainAppService";
+  std::string service_name;
+  std::string status;
+#elif BUILDFLAG(IS_WIN)
+  // used in browser::setLoginItemSettings
+  bool enabled = true;
+  std::wstring name;
+
+  // used in browser::getLoginItemSettings
+  bool executable_will_launch_at_login = false;
+  std::vector<LaunchItem> launch_items;
+#endif
+
+  LoginItemSettings();
+  ~LoginItemSettings();
+  LoginItemSettings(const LoginItemSettings&);
+};
+
 // This class is used for control application-wide operations.
-class Browser : public WindowListObserver {
+class Browser : private WindowListObserver {
  public:
   Browser();
   ~Browser() override;
@@ -82,6 +126,9 @@ class Browser : public WindowListObserver {
   // Clear the recent documents list.
   void ClearRecentDocuments();
 
+  // Return the recent documents list.
+  std::vector<std::string> GetRecentDocuments();
+
 #if BUILDFLAG(IS_WIN)
   // Set the application user model ID.
   void SetAppUserModelID(const std::wstring& name);
@@ -108,53 +155,11 @@ class Browser : public WindowListObserver {
 #endif
 
   // Set/Get the badge count.
-  bool SetBadgeCount(absl::optional<int> count);
-  int GetBadgeCount();
+  bool SetBadgeCount(std::optional<int> count);
+  [[nodiscard]] int badge_count() const { return badge_count_; }
 
-#if BUILDFLAG(IS_WIN)
-  struct LaunchItem {
-    std::wstring name;
-    std::wstring path;
-    std::wstring scope;
-    std::vector<std::wstring> args;
-    bool enabled = true;
-
-    LaunchItem();
-    ~LaunchItem();
-    LaunchItem(const LaunchItem&);
-  };
-#endif
-
-  // Set/Get the login item settings of the app
-  struct LoginItemSettings {
-    bool open_at_login = false;
-    bool open_as_hidden = false;
-    bool restore_state = false;
-    bool opened_at_login = false;
-    bool opened_as_hidden = false;
-    std::u16string path;
-    std::vector<std::u16string> args;
-
-#if BUILDFLAG(IS_MAC)
-    std::string type = "mainAppService";
-    std::string service_name;
-    std::string status;
-#elif BUILDFLAG(IS_WIN)
-    // used in browser::setLoginItemSettings
-    bool enabled = true;
-    std::wstring name;
-
-    // used in browser::getLoginItemSettings
-    bool executable_will_launch_at_login = false;
-    std::vector<LaunchItem> launch_items;
-#endif
-
-    LoginItemSettings();
-    ~LoginItemSettings();
-    LoginItemSettings(const LoginItemSettings&);
-  };
   void SetLoginItemSettings(LoginItemSettings settings);
-  LoginItemSettings GetLoginItemSettings(const LoginItemSettings& options);
+  v8::Local<v8::Value> GetLoginItemSettings(const LoginItemSettings& options);
 
 #if BUILDFLAG(IS_MAC)
   // Set the handler which decides whether to shutdown.
@@ -169,7 +174,7 @@ class Browser : public WindowListObserver {
 
   // Creates an activity and sets it as the one currently in use.
   void SetUserActivity(const std::string& type,
-                       base::Value::Dict user_info,
+                       base::DictValue user_info,
                        gin::Arguments* args);
 
   // Returns the type name of the current user activity.
@@ -184,7 +189,7 @@ class Browser : public WindowListObserver {
 
   // Updates the current user activity
   void UpdateCurrentActivity(const std::string& type,
-                             base::Value::Dict user_info);
+                             base::DictValue user_info);
 
   // Indicates that an user activity is about to be resumed.
   bool WillContinueUserActivity(const std::string& type);
@@ -195,23 +200,23 @@ class Browser : public WindowListObserver {
 
   // Resumes an activity via hand-off.
   bool ContinueUserActivity(const std::string& type,
-                            base::Value::Dict user_info,
-                            base::Value::Dict details);
+                            base::DictValue user_info,
+                            base::DictValue details);
 
   // Indicates that an activity was continued on another device.
   void UserActivityWasContinued(const std::string& type,
-                                base::Value::Dict user_info);
+                                base::DictValue user_info);
 
   // Gives an opportunity to update the Handoff payload.
   bool UpdateUserActivityState(const std::string& type,
-                               base::Value::Dict user_info);
+                               base::DictValue user_info);
 
   void ApplyForcedRTL();
 
   // Bounce the dock icon.
-  enum class BounceType{
-      kCritical = 0,        // NSCriticalRequest
-      kInformational = 10,  // NSInformationalRequest
+  enum class BounceType {
+    kCritical = 0,        // NSCriticalRequest
+    kInformational = 10,  // NSInformationalRequest
   };
   int DockBounce(BounceType type);
   void DockCancelBounce(int request_id);
@@ -234,10 +239,14 @@ class Browser : public WindowListObserver {
   // Set docks' icon.
   void DockSetIcon(v8::Isolate* isolate, v8::Local<v8::Value> icon);
 
+  void SetLaunchedAtLogin(bool launched_at_login) {
+    was_launched_at_login_ = launched_at_login;
+  }
+
 #endif  // BUILDFLAG(IS_MAC)
 
   void ShowAboutPanel();
-  void SetAboutPanelOptions(base::Value::Dict options);
+  void SetAboutPanelOptions(base::DictValue options);
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   void ShowEmojiPanel();
@@ -297,7 +306,7 @@ class Browser : public WindowListObserver {
 
   // Tell the application the loading has been done.
   void WillFinishLaunching();
-  void DidFinishLaunching(base::Value::Dict launch_info);
+  void DidFinishLaunching(base::DictValue launch_info);
 
   void OnAccessibilitySupportChanged();
 
@@ -308,9 +317,8 @@ class Browser : public WindowListObserver {
   // instance is destroyed.
   void SetMainMessageLoopQuitClosure(base::OnceClosure quit_closure);
 
-  void AddObserver(BrowserObserver* obs) { observers_.AddObserver(obs); }
-
-  void RemoveObserver(BrowserObserver* obs) { observers_.RemoveObserver(obs); }
+  void AddObserver(BrowserObserver* obs);
+  void RemoveObserver(BrowserObserver* obs);
 
 #if BUILDFLAG(IS_MAC)
   // Returns whether secure input is enabled
@@ -368,13 +376,14 @@ class Browser : public WindowListObserver {
 #if BUILDFLAG(IS_MAC)
   std::unique_ptr<ui::ScopedPasswordInputEnabler> password_input_enabler_;
   base::Time last_dock_show_;
+  bool was_launched_at_login_;
 #endif
 
-  base::Value::Dict about_panel_options_;
+  base::DictValue about_panel_options_;
 
 #if BUILDFLAG(IS_WIN)
   void UpdateBadgeContents(HWND hwnd,
-                           const absl::optional<std::string>& badge_content,
+                           const std::optional<std::string>& badge_content,
                            const std::string& badge_alt_string);
 
   // In charge of running taskbar related APIs.

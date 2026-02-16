@@ -10,10 +10,10 @@ Electron needs this constructor, namely for gin_helper::Constructible
 objects.
 
 diff --git a/gin/object_template_builder.cc b/gin/object_template_builder.cc
-index 1c7277c4f6e8ad7a8de2190a08ac79812823556b..9d4c053d69409ea02da8c2398463a033f5310172 100644
+index 196749df48a41595da226a4baec72051446fc442..256e6634d9689ebcc53dfc8849587a73ad311463 100644
 --- a/gin/object_template_builder.cc
 +++ b/gin/object_template_builder.cc
-@@ -168,6 +168,13 @@ ObjectTemplateBuilder::ObjectTemplateBuilder(v8::Isolate* isolate,
+@@ -145,6 +145,13 @@ ObjectTemplateBuilder::ObjectTemplateBuilder(v8::Isolate* isolate,
    template_->SetInternalFieldCount(kNumberOfInternalFields);
  }
  
@@ -28,10 +28,10 @@ index 1c7277c4f6e8ad7a8de2190a08ac79812823556b..9d4c053d69409ea02da8c2398463a033
      const ObjectTemplateBuilder& other) = default;
  
 diff --git a/gin/object_template_builder.h b/gin/object_template_builder.h
-index c2bd76ba8f7b33c2043636fa8946eedad78817e5..95258a6576a5f8555f73271a7ae119c4ab41145d 100644
+index cf4f1ae6598fdede655d33baccda254965566ea5..a4c16dc0ec3ff16413fc2a04225a2401989a084b 100644
 --- a/gin/object_template_builder.h
 +++ b/gin/object_template_builder.h
-@@ -46,6 +46,9 @@ class GIN_EXPORT ObjectTemplateBuilder {
+@@ -48,6 +48,9 @@ class GIN_EXPORT ObjectTemplateBuilder {
   public:
    explicit ObjectTemplateBuilder(v8::Isolate* isolate);
    ObjectTemplateBuilder(v8::Isolate* isolate, const char* type_name);

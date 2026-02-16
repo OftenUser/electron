@@ -5,9 +5,9 @@
 #ifndef ELECTRON_SHELL_BROWSER_WEB_CONTENTS_ZOOM_CONTROLLER_H_
 #define ELECTRON_SHELL_BROWSER_WEB_CONTENTS_ZOOM_CONTROLLER_H_
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
-#include "base/observer_list_types.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
@@ -18,7 +18,7 @@ class WebContentsZoomObserver;
 
 // Manages the zoom changes of WebContents.
 class WebContentsZoomController
-    : public content::WebContentsObserver,
+    : private content::WebContentsObserver,
       public content::WebContentsUserData<WebContentsZoomController> {
  public:
   // Defines how zoom changes are handled.
@@ -81,7 +81,7 @@ class WebContentsZoomController
   bool SetZoomLevel(double zoom_level);
 
   void SetDefaultZoomFactor(double factor);
-  double GetDefaultZoomFactor();
+  double default_zoom_factor() { return default_zoom_factor_; }
 
   // Sets the temporary zoom level through HostZoomMap.
   void SetTemporaryZoomLevel(double level);

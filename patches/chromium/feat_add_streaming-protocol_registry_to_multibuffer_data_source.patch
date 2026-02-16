@@ -12,14 +12,18 @@ This patch adds a list of "streaming protocols" to the MultibufferDataSource in 
 other protocols to register their streaming behavior. MultibufferDataSource::AssumeFullyBuffered()
 then refers to the list so that it can correctly determine the data source's settings.
 
+This patch also reverts https://chromium-review.googlesource.com/c/chromium/src/+/6431846,
+which removed range-requests-supported on non-http protocols. See https://issues.chromium.org/issues/41161335
+for more information.
+
 diff --git a/third_party/blink/renderer/platform/media/multi_buffer_data_source.cc b/third_party/blink/renderer/platform/media/multi_buffer_data_source.cc
-index a7e9ab69fa13a0ad2e5aa97f09a8da4d9d51a48f..f994f23c16cc7dbc703d5e2289803940bafa5271 100644
+index d1565bfe05342915d516d9c46eb7c4922c361b22..a5f35e7782c047b147458e569924de0fd30db7ce 100644
 --- a/third_party/blink/renderer/platform/media/multi_buffer_data_source.cc
 +++ b/third_party/blink/renderer/platform/media/multi_buffer_data_source.cc
-@@ -12,8 +12,10 @@
- #include "base/functional/callback_helpers.h"
+@@ -11,8 +11,10 @@
+ #include "base/containers/adapters.h"
  #include "base/location.h"
- #include "base/memory/raw_ptr.h"
+ #include "base/memory/raw_span.h"
 +#include "base/no_destructor.h"
  #include "base/numerics/safe_conversions.h"
  #include "base/task/single_thread_task_runner.h"
@@ -27,11 +31,23 @@ index a7e9ab69fa13a0ad2e5aa97f09a8da4d9d51a48f..f994f23c16cc7dbc703d5e2289803940
  #include "media/base/media_log.h"
  #include "net/base/net_errors.h"
  #include "third_party/blink/renderer/platform/media/buffered_data_source_host_impl.h"
-@@ -62,8 +64,20 @@ const int kUpdateBufferSizeFrequency = 32;
- // How long to we delay a seek after a read?
- constexpr base::TimeDelta kSeekDelay = base::Milliseconds(20);
+@@ -69,6 +71,10 @@ constexpr base::TimeDelta kSeekDelay = base::Milliseconds(20);
  
-+std::vector<std::string>* GetStreamingSchemes() {
+ }  // namespace
+ 
++void AddStreamingScheme(const char* new_scheme) {
++  MultiBufferDataSource::GetStreamingSchemes()->push_back(new_scheme);
++}
++
+ class MultiBufferDataSource::ReadOperation {
+  public:
+   ReadOperation() = delete;
+@@ -136,13 +142,29 @@ MultiBufferDataSource::~MultiBufferDataSource() {
+   DCHECK(render_task_runner_->BelongsToCurrentThread());
+ }
+ 
++// static
++std::vector<std::string>* MultiBufferDataSource::GetStreamingSchemes() {
 +  static base::NoDestructor<std::vector<std::string>> streaming_schemes({
 +    url::kHttpsScheme,
 +    url::kHttpScheme
@@ -39,22 +55,15 @@ index a7e9ab69fa13a0ad2e5aa97f09a8da4d9d51a48f..f994f23c16cc7dbc703d5e2289803940
 +  return streaming_schemes.get();
 +}
 +
- }  // namespace
- 
-+void AddStreamingScheme(const char* new_scheme) {
-+  GetStreamingSchemes()->push_back(new_scheme);
-+}
-+
- class MultiBufferDataSource::ReadOperation {
-  public:
-   ReadOperation() = delete;
-@@ -155,7 +169,14 @@ bool MultiBufferDataSource::media_has_played() const {
+ bool MultiBufferDataSource::media_has_played() const {
+   return media_has_played_;
+ }
  
  bool MultiBufferDataSource::AssumeFullyBuffered() const {
    DCHECK(url_data_);
--  return !url_data_->url().SchemeIsHTTPOrHTTPS();
+-  return !url_data_->url().ProtocolIsInHTTPFamily();
 +
-+  const std::string scheme = url_data_->url().scheme();
++  const std::string scheme = url_data_->url().Protocol().Ascii();
 +  for (const std::string& streaming_scheme : *GetStreamingSchemes()) {
 +    if (base::EqualsCaseInsensitiveASCII(scheme, streaming_scheme)) {
 +      return false;
@@ -63,12 +72,20 @@ index a7e9ab69fa13a0ad2e5aa97f09a8da4d9d51a48f..f994f23c16cc7dbc703d5e2289803940
 +  return true;
  }
  
- void MultiBufferDataSource::SetReader(MultiBufferReader* reader) {
+ void MultiBufferDataSource::SetReader(
 diff --git a/third_party/blink/renderer/platform/media/multi_buffer_data_source.h b/third_party/blink/renderer/platform/media/multi_buffer_data_source.h
-index 578374d9a4fbaa9001e2dc39e4c7fa2a09658dde..64031ef9928ec86bf7e46c77c05ba7ca2e7f2d28 100644
+index 5100bd21163f9ceadb728ed5306dcf8320e528a8..c2ee03ca6a75a2fef1ce778e663a74bda608acb4 100644
 --- a/third_party/blink/renderer/platform/media/multi_buffer_data_source.h
 +++ b/third_party/blink/renderer/platform/media/multi_buffer_data_source.h
-@@ -34,6 +34,8 @@ namespace blink {
+@@ -18,6 +18,7 @@
+ #include "media/base/data_source.h"
+ #include "media/base/ranges.h"
+ #include "media/base/tuneable.h"
++#include "third_party/blink/public/platform/web_common.h"
+ #include "third_party/blink/renderer/platform/media/url_index.h"
+ #include "third_party/blink/renderer/platform/platform_export.h"
+ #include "third_party/blink/renderer/platform/wtf/vector.h"
+@@ -35,6 +36,8 @@ namespace blink {
  class BufferedDataSourceHost;
  class MultiBufferReader;
  
@@ -77,3 +94,49 @@ index 578374d9a4fbaa9001e2dc39e4c7fa2a09658dde..64031ef9928ec86bf7e46c77c05ba7ca
  // A data source capable of loading URLs and buffering the data using an
  // in-memory sliding window.
  //
+@@ -64,6 +67,8 @@ class PLATFORM_EXPORT MultiBufferDataSource
+     return url_data_->mime_type();
+   }
+ 
++  static std::vector<std::string>* GetStreamingSchemes();
++
+   // Method called on the render thread.
+   using InitializeCB = base::OnceCallback<void(bool)>;
+   void Initialize(InitializeCB init_cb) override;
+diff --git a/third_party/blink/renderer/platform/media/resource_multi_buffer_data_provider.cc b/third_party/blink/renderer/platform/media/resource_multi_buffer_data_provider.cc
+index 4beb963ecd1c42b1d236cbfdafa9daf27ac61c06..68175244b3496f7b999ae4a3a3e14b5f2b7e659d 100644
+--- a/third_party/blink/renderer/platform/media/resource_multi_buffer_data_provider.cc
++++ b/third_party/blink/renderer/platform/media/resource_multi_buffer_data_provider.cc
+@@ -8,6 +8,7 @@
+ #include <stddef.h>
+ 
+ #include <utility>
++#include <algorithm>
+ 
+ #include "base/location.h"
+ #include "base/metrics/histogram_functions.h"
+@@ -29,6 +30,7 @@
+ #include "third_party/blink/public/platform/web_url_response.h"
+ #include "third_party/blink/public/web/web_associated_url_loader.h"
+ #include "third_party/blink/renderer/platform/media/cache_util.h"
++#include "third_party/blink/renderer/platform/media/multi_buffer_data_source.h"
+ #include "third_party/blink/renderer/platform/media/resource_fetch_context.h"
+ #include "third_party/blink/renderer/platform/media/url_index.h"
+ #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+@@ -313,6 +315,16 @@ void ResourceMultiBufferDataProvider::DidReceiveResponse(
+       do_fail = true;
+     }
+   } else {
++    // For non-HTTP protocols, only set range_supported for registered streaming schemes
++    const std::string scheme = destination_url_data->url().Protocol().Ascii();
++
++    if (std::ranges::any_of(*MultiBufferDataSource::GetStreamingSchemes(),
++                         [&scheme](const std::string& streaming_scheme) {
++                           return base::EqualsCaseInsensitiveASCII(scheme, streaming_scheme);
++                         })) {
++      destination_url_data->set_range_supported();
++    }
++
+     if (content_length != kPositionNotSpecified) {
+       destination_url_data->set_length(content_length + byte_pos());
+     }

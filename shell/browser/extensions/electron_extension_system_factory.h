@@ -5,8 +5,14 @@
 #ifndef ELECTRON_SHELL_BROWSER_EXTENSIONS_ELECTRON_EXTENSION_SYSTEM_FACTORY_H_
 #define ELECTRON_SHELL_BROWSER_EXTENSIONS_ELECTRON_EXTENSION_SYSTEM_FACTORY_H_
 
-#include "base/memory/singleton.h"
+#include <memory>
+
 #include "extensions/browser/extension_system_provider.h"
+
+namespace base {
+template <typename T>
+class NoDestructor;
+}  // namespace base
 
 namespace extensions {
 
@@ -26,13 +32,13 @@ class ElectronExtensionSystemFactory : public ExtensionSystemProvider {
       const ElectronExtensionSystemFactory&) = delete;
 
  private:
-  friend struct base::DefaultSingletonTraits<ElectronExtensionSystemFactory>;
+  friend base::NoDestructor<ElectronExtensionSystemFactory>;
 
   ElectronExtensionSystemFactory();
   ~ElectronExtensionSystemFactory() override;
 
   // BrowserContextKeyedServiceFactory implementation:
-  KeyedService* BuildServiceInstanceFor(
+  std::unique_ptr<KeyedService> BuildServiceInstanceForBrowserContext(
       content::BrowserContext* context) const override;
   content::BrowserContext* GetBrowserContextToUse(
       content::BrowserContext* context) const override;

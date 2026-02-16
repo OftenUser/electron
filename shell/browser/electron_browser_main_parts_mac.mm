@@ -8,13 +8,12 @@
 
 #include "base/apple/bundle_locations.h"
 #include "base/apple/foundation_util.h"
-#include "base/path_service.h"
-#include "services/device/public/cpp/geolocation/geolocation_manager.h"
-#include "services/device/public/cpp/geolocation/system_geolocation_source_mac.h"
+#include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
+#include "services/device/public/cpp/geolocation/system_geolocation_source_apple.h"
 #include "shell/browser/browser_process_impl.h"
+#include "shell/browser/electron_permission_manager.h"
 #include "shell/browser/mac/electron_application.h"
 #include "shell/browser/mac/electron_application_delegate.h"
-#include "shell/common/electron_paths.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
 namespace electron {
@@ -34,9 +33,16 @@ void ElectronBrowserMainParts::PreCreateMainMessageLoop() {
       setObject:@"NO"
          forKey:@"NSTreatUnknownArgumentsAsOpen"];
 
-  if (!device::GeolocationManager::GetInstance()) {
-    device::GeolocationManager::SetInstance(
-        device::SystemGeolocationSourceMac::CreateGeolocationManagerOnMac());
+  const bool geolocationDisabled =
+      ElectronPermissionManager::IsGeolocationDisabledViaCommandLine();
+
+  // Check if geolocation api is NOT disabled via command line before
+  // CreateGeolocationSystemPermissionManager is called
+  if (!geolocationDisabled &&
+      !device::GeolocationSystemPermissionManager::GetInstance()) {
+    device::GeolocationSystemPermissionManager::SetInstance(
+        device::SystemGeolocationSourceApple::
+            CreateGeolocationSystemPermissionManager());
   }
 }
 

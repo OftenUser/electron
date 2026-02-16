@@ -49,15 +49,7 @@ void GPUInfoEnumerator::EndGPUDevice() {
   auto& top_value = value_stack_.top();
   // GPUDevice can be more than one. So create a list of all.
   // The first one is the active GPU device.
-  if (base::Value* list_value = top_value.Find(kGPUDeviceKey)) {
-    DCHECK(list_value->is_list());
-    base::Value::List& list = list_value->GetList();
-    list.Append(std::move(current_));
-  } else {
-    base::Value::List gpus;
-    gpus.Append(std::move(current_));
-    top_value.Set(kGPUDeviceKey, std::move(gpus));
-  }
+  top_value.EnsureList(kGPUDeviceKey)->Append(std::move(current_));
   current_ = std::move(top_value);
   value_stack_.pop();
 }
@@ -88,19 +80,6 @@ void GPUInfoEnumerator::EndVideoEncodeAcceleratorSupportedProfile() {
   value_stack_.pop();
 }
 
-void GPUInfoEnumerator::BeginImageDecodeAcceleratorSupportedProfile() {
-  value_stack_.push(std::move(current_));
-  current_ = {};
-}
-
-void GPUInfoEnumerator::EndImageDecodeAcceleratorSupportedProfile() {
-  auto& top_value = value_stack_.top();
-  top_value.Set(kImageDecodeAcceleratorSupportedProfileKey,
-                std::move(current_));
-  current_ = std::move(top_value);
-  value_stack_.pop();
-}
-
 void GPUInfoEnumerator::BeginAuxAttributes() {
   value_stack_.push(std::move(current_));
   current_ = {};
@@ -125,7 +104,7 @@ void GPUInfoEnumerator::EndOverlayInfo() {
   value_stack_.pop();
 }
 
-base::Value::Dict GPUInfoEnumerator::GetDictionary() {
+base::DictValue GPUInfoEnumerator::GetDictionary() {
   return std::move(current_);
 }
 

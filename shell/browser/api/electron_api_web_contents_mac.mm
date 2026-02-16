@@ -24,7 +24,7 @@ bool WebContents::IsFocused() const {
   if (!view)
     return false;
 
-  if (GetType() != Type::kBackgroundPage) {
+  if (type() != Type::kBackgroundPage) {
     auto window = [web_contents()->GetNativeView().GetNativeNSView() window];
     // On Mac the render widget host view does not lose focus when the window
     // loses focus so check if the top level window is the key window.
@@ -37,9 +37,9 @@ bool WebContents::IsFocused() const {
 
 bool WebContents::PlatformHandleKeyboardEvent(
     content::WebContents* source,
-    const content::NativeWebKeyboardEvent& event) {
+    const input::NativeWebKeyboardEvent& event) {
   if (event.skip_if_unhandled ||
-      event.GetType() == content::NativeWebKeyboardEvent::Type::kChar)
+      event.GetType() == input::NativeWebKeyboardEvent::Type::kChar)
     return false;
 
   // Check if the webContents has preferences and to ignore shortcuts

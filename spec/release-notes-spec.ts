@@ -1,10 +1,12 @@
-import { GitProcess, IGitExecutionOptions, IGitResult } from 'dugite';
 import { expect } from 'chai';
-import * as notes from '../script/release/notes/notes.js';
-import * as path from 'node:path';
 import * as sinon from 'sinon';
 
-/* Fake a Dugite GitProcess that only returns the specific
+import { SpawnSyncReturns } from 'node:child_process';
+import * as path from 'node:path';
+
+import * as notes from '../script/release/notes/notes';
+
+/* Fake a git spawnSync that only returns the specific
    commits that we want to test */
 
 class Commit {
@@ -41,10 +43,10 @@ class GitFake {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  exec (args: string[], path: string, options?: IGitExecutionOptions | undefined): Promise<IGitResult> {
+  exec (command: string, args: string[], options?: any): SpawnSyncReturns<string> {
     let stdout = '';
     const stderr = '';
-    const exitCode = 0;
+    const status = 0;
 
     if (args.length === 3 && args[0] === 'merge-base') {
       // expected form: `git merge-base branchName1 branchName2`
@@ -76,10 +78,10 @@ class GitFake {
       // git branch --all --contains ${ref} --sort version:refname
       stdout = args[3];
     } else {
-      console.error('unhandled GitProcess.exec():', args);
+      console.error('unhandled git spawnSync():', args);
     }
 
-    return Promise.resolve({ exitCode, stdout, stderr });
+    return { status, stdout, stderr, pid: 0, output: [null, stdout, stderr], signal: null };
   }
 }
 
@@ -116,8 +118,14 @@ describe('release notes', () => {
   });
 
   beforeEach(() => {
-    const wrapper = (args: string[], path: string, options?: IGitExecutionOptions | undefined) => gitFake.exec(args, path, options);
-    sandbox.replace(GitProcess, 'exec', wrapper);
+    const wrapper = (command: unknown, args: unknown, options?: unknown) => {
+      if (command === 'git' && Array.isArray(args)) {
+        return gitFake.exec(command as string, args as string[], options);
+      }
+      // Default behavior for non-git commands
+      return { status: 0, stdout: '', stderr: '', pid: 0, output: [null, '', ''], signal: null };
+    };
+    sandbox.stub(require('node:child_process'), 'spawnSync').callsFake(wrapper);
 
     gitFake.setBranch(oldBranch, [...sharedHistory, oldFix]);
   });
@@ -209,6 +217,53 @@ describe('release notes', () => {
       const results: any = await notes.get(oldBranch, newBranch, version);
       expect(results.breaking).to.have.lengthOf(1);
       expect(results.breaking[0].hash).to.equal(testCommit.sha1);
+    });
+  });
+  // test that when you have multiple stack updates only the
+  // latest will be kept
+  describe('superseding stack updates', () => {
+    const oldBranch = '27-x-y';
+    const newBranch = '28-x-y';
+
+    const version = 'v28.0.0';
+
+    it('with different major versions', async function () {
+      const mostRecentCommit = new Commit('9d0e6d09f0be0abbeae46dd3d66afd96d2daacaa', 'chore: bump chromium to 119.0.6043.0');
+
+      const sharedChromiumHistory = [
+        new Commit('029127a8b6f7c511fca4612748ad5b50e43aadaa', 'chore: bump chromium to 118.0.5993.0') // merge-base
+      ];
+      const chromiumPatchUpdates = [
+        new Commit('d9ba26273ad3e7a34c905eccbd5dabda4eb7b402', 'chore: bump chromium to 118.0.5991.0'),
+        mostRecentCommit,
+        new Commit('d6c8ff2e7050f30dffd784915bcbd2a9f993cdb2', 'chore: bump chromium to 119.0.6029.0')
+      ];
+
+      gitFake.setBranch(oldBranch, sharedChromiumHistory);
+      gitFake.setBranch(newBranch, [...sharedChromiumHistory, ...chromiumPatchUpdates]);
+
+      const results: any = await notes.get(oldBranch, newBranch, version);
+      expect(results.other).to.have.lengthOf(1);
+      expect(results.other[0].hash).to.equal(mostRecentCommit.sha1);
+    });
+    it('with different build versions', async function () {
+      const mostRecentCommit = new Commit('8f7a48879ef8633a76279803637cdee7f7c6cd4f', 'chore: bump chromium to 119.0.6045.0');
+
+      const sharedChromiumHistory = [
+        new Commit('029127a8b6f7c511fca4612748ad5b50e43aadaa', 'chore: bump chromium to 118.0.5993.0') // merge-base
+      ];
+      const chromiumPatchUpdates = [
+        mostRecentCommit,
+        new Commit('9d0e6d09f0be0abbeae46dd3d66afd96d2daacaa', 'chore: bump chromium to 119.0.6043.0'),
+        new Commit('d6c8ff2e7050f30dffd784915bcbd2a9f993cdb2', 'chore: bump chromium to 119.0.6029.0')
+      ];
+
+      gitFake.setBranch(oldBranch, sharedChromiumHistory);
+      gitFake.setBranch(newBranch, [...sharedChromiumHistory, ...chromiumPatchUpdates]);
+
+      const results: any = await notes.get(oldBranch, newBranch, version);
+      expect(results.other).to.have.lengthOf(1);
+      expect(results.other[0].hash).to.equal(mostRecentCommit.sha1);
     });
   });
 });
