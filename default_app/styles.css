@@ -1,6 +1,6 @@
 body {
-  color: #86a5b1;
-  background-color: #2f3241;
+  color: #86A5B1;
+  background-color: #2F3241;
   font-family: Roboto, -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", "Oxygen", "Ubuntu", "Cantarell", "Open Sans", sans-serif;
   margin: 0;
   display: flex;
@@ -9,18 +9,18 @@ body {
 
 .container {
   margin: 15px 30px;
-  background-color: #2f3241;
+  background-color: #2F3241;
   flex: 1;
   display: flex;
   flex-direction: column;
 }
 
 .svg-stroke {
-  stroke: #9feaf9;
+  stroke: #9FEAF9;
 }
 
 .svg-fill {
-  fill: #9feaf9;
+  fill: #9FEAF9;
 }
 
 .vertical-middle {
@@ -47,30 +47,30 @@ hero-icon.loop-3 {
 }
 
 .hero-icon {
-  fill: #c2f5ff;
+  fill: #C2F5FF;
   opacity: 1;
   transform-origin: 50% 50%;
 }
 
 .hero-app {
-  fill: #71abb7;
+  fill: #71ABB7;
   transform-origin: 50% 50%;
 }
 
 a {
-  color: #86a5b1;
+  color: #86A5B1;
   text-decoration: none;
   transition: all 0.2s;
 }
 
 a:hover {
-  color: #c2f5ff;
+  color: #C2F5FF;
   text-decoration: none;
 }
 
 pre, code, .code {
   font-family: "Menlo", "Lucida Console", monospace;
-  color: #c2f5ff;
+  color: #C2F5FF;
 }
 
 pre {
@@ -135,7 +135,7 @@ nav {
   margin: 0;
   padding: 0;
   font-size: 42px !important;
-  color: #9feaf9;
+  color: #9FEAF9;
   text-align: center;
   background-color: rgba(194, 245, 255, 0.1);
   border-radius: 50%;
@@ -149,7 +149,18 @@ nav {
   margin: 0 auto;
 }
 
-.octicon-gist:before { padding-left: 10px; }
-.octicon-gear:before { padding-left: 5px; }
-.octicon-star:before { padding-left: 6px; }
-.octicon-gift:before { padding-left: 2px; }
+.octicon-gist:before {
+  padding-left: 10px;
+}
+
+.octicon-gear:before {
+  padding-left: 5px;
+}
+
+.octicon-star:before {
+  padding-left: 6px;
+}
+
+.octicon-gift:before {
+  padding-left: 2px;
+}
