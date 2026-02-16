@@ -12,7 +12,7 @@ app.on('window-all-closed', () => {
 });
 
 function decorateURL (url: string) {
-  // safely add `?utm_source=default_app
+  // Safely add `?utm_source=default_app
   const parsedUrl = new URL(url);
   parsedUrl.searchParams.append('utm_source', 'default_app');
   return parsedUrl.toString();
@@ -98,7 +98,7 @@ export const loadURL = async (appUrl: string) => {
 };
 
 export const loadFile = async (appPath: string) => {
-  mainWindow = await createWindow(appPath === 'index.html' ? '#2f3241' : undefined);
+  mainWindow = await createWindow(appPath === 'index.html' ? '#2F3241' : undefined);
   mainWindow.loadFile(appPath);
   mainWindow.focus();
 };
