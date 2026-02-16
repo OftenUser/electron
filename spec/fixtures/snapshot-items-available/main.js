@@ -7,9 +7,9 @@ app.whenReady().then(() => {
   try {
     const testValue = f(); // eslint-disable-line no-undef
     if (testValue === 86) {
-      console.log('ok test snapshot successfully loaded.');
+      console.log('OK test snapshot successfully loaded.');
     } else {
-      console.log('not ok test snapshot could not be successfully loaded.');
+      console.log('Not OK test snapshot could not be successfully loaded.');
       returnCode = 1;
     }
   } catch (ex) {
@@ -22,5 +22,5 @@ app.whenReady().then(() => {
 });
 
 process.on('exit', function (code) {
-  console.log('test snapshot exited with code: ' + code);
+  console.log('Test snapshot exited with code: ' + code);
 });
